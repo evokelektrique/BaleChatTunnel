@@ -100,6 +100,26 @@ Use the CLI for remote relays or scripted deployments. Replace
 `PATH_TO_BINARY_FILE` with the directory that contains the downloaded `btun`
 binary.
 
+For a Linux x64 relay host, use the one-line installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | bash
+```
+
+The installer downloads the latest `btun-linux-x64` release artifact, installs
+it as `~/.local/bin/btun`, verifies the binary, and starts the relay setup
+wizard with profile `~/.btun-relay`. Choose `relay` when asked for the machine
+role, complete Bale login, then copy the `relay_public_key` printed by the
+wizard.
+
+Optional installer overrides:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_VERSION=v0.1.0 bash
+curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_INSTALL_DIR=/usr/local/bin BTUN_PROFILE=/etc/btun/relay bash
+curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_RUN_SETUP=0 bash
+```
+
 The easiest path is the interactive setup wizard. When it asks for the machine
 role, enter one of the two supported values: `client` or `relay`. The wizard
 prints this machine's public key and asks for the public key from the other
