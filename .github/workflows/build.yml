@@ -1,0 +1,114 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        run: make pub-get
+      - name: Run tests
+        run: make test
+
+  linux-app-x64:
+    name: Linux app x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+      - name: Install dependencies
+        run: make pub-get
+      - name: Build Linux app
+        run: make build-linux-x64
+      - name: Upload Linux app
+        uses: actions/upload-artifact@v4
+        with:
+          name: bale-chat-tunnel-linux-x64
+          path: build/linux/x64/release/bundle
+
+  windows-app-x64:
+    name: Windows app x64
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install make
+        shell: powershell
+        run: choco install make -y
+      - name: Install dependencies
+        run: make pub-get
+      - name: Build Windows app
+        run: make build-windows-x64
+      - name: Upload Windows app
+        uses: actions/upload-artifact@v4
+        with:
+          name: bale-chat-tunnel-windows-x64
+          path: build/windows/x64/runner/Release
+
+  linux-cli-x64:
+    name: Linux CLI x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        run: make pub-get
+      - name: Build Linux CLI
+        run: make check-cli-linux-x64
+      - name: Upload Linux CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: btun-linux-x64
+          path: build/cli/btun-linux-x64
+
+  windows-cli-x64:
+    name: Windows CLI x64
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install make
+        shell: powershell
+        run: choco install make -y
+      - name: Install dependencies
+        run: make pub-get
+      - name: Build Windows CLI
+        run: make check-cli-windows-x64
+      - name: Upload Windows CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: btun-windows-x64
+          path: build/cli/btun-windows-x64.exe
