@@ -3,7 +3,8 @@ set -euo pipefail
 
 repo="evokelektrique/BaleChatTunnel"
 binary_name="btun"
-asset_name="btun-linux-x64"
+asset_name="bale-chat-tunnel-cli-linux-x64"
+legacy_asset_name="btun-linux-x64"
 
 install_dir="${BTUN_INSTALL_DIR:-$HOME/.local/bin}"
 profile="${BTUN_PROFILE:-$HOME/.btun-relay}"
@@ -38,14 +39,15 @@ case "$(uname -m)" in
 esac
 
 need curl
-need chmod
+need install
 need mkdir
 need mktemp
 
+release_base="https://github.com/$repo/releases"
 if [ "$version" = "latest" ]; then
-  download_url="https://github.com/$repo/releases/latest/download/$asset_name"
+  download_base="$release_base/latest/download"
 else
-  download_url="https://github.com/$repo/releases/download/$version/$asset_name"
+  download_base="$release_base/download/$version"
 fi
 
 tmp_file="$(mktemp)"
@@ -55,12 +57,13 @@ cleanup() {
 trap cleanup EXIT
 
 say "downloading $asset_name from $repo ($version)"
-curl --fail --location --show-error --progress-bar "$download_url" --output "$tmp_file"
+if ! curl --fail --location --show-error --progress-bar "$download_base/$asset_name" --output "$tmp_file"; then
+  say "could not download $asset_name; trying legacy asset name $legacy_asset_name"
+  curl --fail --location --show-error --progress-bar "$download_base/$legacy_asset_name" --output "$tmp_file"
+fi
 
 mkdir -p "$install_dir"
-chmod 0755 "$tmp_file"
-mv "$tmp_file" "$install_dir/$binary_name"
-trap - EXIT
+install -m 0755 "$tmp_file" "$install_dir/$binary_name"
 
 say "installed $install_dir/$binary_name"
 "$install_dir/$binary_name" help >/dev/null
@@ -84,4 +87,10 @@ fi
 
 say "starting interactive relay setup"
 say "choose role 'relay', log in to Bale when prompted, then copy the relay_public_key shown at the end"
-exec "$install_dir/$binary_name" setup --profile "$profile"
+if [ -r /dev/tty ]; then
+  exec "$install_dir/$binary_name" setup --profile "$profile" </dev/tty
+fi
+
+say "no interactive terminal is available for setup"
+say "run: $install_dir/$binary_name setup --profile $profile"
+exit 1

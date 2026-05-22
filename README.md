@@ -33,10 +33,10 @@ https://github.com/evokelektrique/BaleChatTunnel/releases
 
 Expected release artifacts:
 
-- Linux desktop app, x64
-- Windows desktop app, x64
-- `btun` Linux CLI, x64
-- `btun` Windows CLI, x64
+- `bale-chat-tunnel-desktop-linux-x64.tar.gz`
+- `bale-chat-tunnel-desktop-windows-x64.zip`
+- `bale-chat-tunnel-cli-linux-x64`
+- `bale-chat-tunnel-cli-windows-x64.exe`
 
 If no release is available yet, build from source using the development steps
 below.
@@ -106,11 +106,11 @@ For a Linux x64 relay host, use the one-line installer:
 curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | bash
 ```
 
-The installer downloads the latest `btun-linux-x64` release artifact, installs
-it as `~/.local/bin/btun`, verifies the binary, and starts the relay setup
-wizard with profile `~/.btun-relay`. Choose `relay` when asked for the machine
-role, complete Bale login, then copy the `relay_public_key` printed by the
-wizard.
+The installer downloads the latest `bale-chat-tunnel-cli-linux-x64` release
+artifact, installs it as `~/.local/bin/btun`, verifies the binary, and starts
+the relay setup wizard with profile `~/.btun-relay`. Choose `relay` when asked
+for the machine role, complete Bale login, then copy the `relay_public_key`
+printed by the wizard.
 
 Optional installer overrides:
 
