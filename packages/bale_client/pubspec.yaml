@@ -1,6 +1,6 @@
 name: bale_client
 description: A simple Dart client for Bale Web API authentication, messaging, and files.
-version: 0.1.0
+version: 0.1.1
 publish_to: none
 
 environment:

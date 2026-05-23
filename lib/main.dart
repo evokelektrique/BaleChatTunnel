@@ -10,7 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 const appTitle = 'Bale Chat Tunnel';
-const appVersionLabel = '0.1.0';
+const appVersionLabel = '0.1.1';
 const appRepositoryUrl = 'https://github.com/evokelektrique/BaleChatTunnel';
 
 Future<void> main() async {
