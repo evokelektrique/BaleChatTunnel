@@ -1,317 +1,243 @@
 # Bale Chat Tunnel
 
-Bale Chat Tunnel is a VPN tunnel over Bale messenger. It carries local SOCKS5
-traffic by splitting encrypted tunnel data into chunks, uploading those chunks
-through Bale, downloading them on the relay side, and reassembling the original
-TCP streams.
-
-The project is built for a two-machine setup. The client machine runs the local
-SOCKS5 proxy. The relay machine receives the encrypted chunks through Bale and
-forwards the traffic to the internet.
+Tunnel local SOCKS5 traffic through Bale Saved Messages using a client machine
+and a relay machine.
 
 ```text
-Browser/App -> SOCKS 127.0.0.1:1080 -> Bale Chat Tunnel
-                                            |
-                                            v
-                              encrypted chunk files on Bale
-                                            |
-                                            v
-                                   Relay machine -> Internet
-```
-
-The desktop app handles setup, key exchange, connection status, and local SOCKS
-configuration. The `btun` command-line tool provides the same tunnel core for
-servers, relays, and automation.
-
-## Download Links / Release Page
-
-Prebuilt downloads are published on the GitHub Releases page:
-
-```text
-https://github.com/evokelektrique/BaleChatTunnel/releases
-```
-
-Expected release artifacts:
-
-- `bale-chat-tunnel-desktop-linux-x64.tar.gz`
-- `bale-chat-tunnel-desktop-windows-x64.zip`
-- `bale-chat-tunnel-cli-linux-x64`
-- `bale-chat-tunnel-cli-windows-x64.exe`
-
-If no release is available yet, build from source using the development steps
-below.
-
-## Setup
-
-### Requirements
-
-You need two machines:
-
-- Client machine: the computer where your browser or application will use the
-  tunnel.
-- Relay machine: the computer that has normal internet access and forwards the
-  traffic.
-
-You also need:
-
-- a Bale account available on both machines
-- network access to Bale from both machines
-- the Bale Chat Tunnel desktop app, or the matching `btun` CLI binary
-- a copied public key from each side during setup
-
-The default local proxy is:
-
-```text
+Browser/App
+    |
+    v
 SOCKS5 127.0.0.1:1080
+    |
+    v
+client -> Bale -> relay -> Internet
 ```
 
-Configure your browser, operating system, or application to use that SOCKS5
-proxy after the client is connected.
+## Features
 
-### GUI Setup
+- Flutter app for interactive setup, Bale login, key exchange, status, and logs.
+- Dart CLI for relays, servers, and scripted setup.
+- Encrypted chunk transport over Bale Saved Messages.
+- Local SOCKS5 endpoint, defaulting to `127.0.0.1:1080`.
+- Relay policy for allowed ports, private IP blocking, and relay-side DNS.
 
-Use the desktop application when you want an interactive setup.
+## Requirements
 
-On the client machine:
+- Flutter/Dart compatible with SDK `^3.11.0`.
+- A Bale account usable on both machines.
+- Network access to Bale from both machines.
+- Two profiles: one `client`, one `relay`.
+- Public keys exchanged between the two profiles.
 
-1. Open Bale Chat Tunnel.
-2. Go to Settings.
-3. Initialize the profile if it has not been created yet.
-4. Log in when prompted from the Home connection button.
-5. Copy the client public key from Key Exchange.
-6. Paste the relay public key into the Tunnel section.
-7. Return to Home and connect after all checks are green.
+For Linux desktop builds, install the usual Flutter Linux build dependencies:
+`clang`, `cmake`, `ninja-build`, `pkg-config`, `libgtk-3-dev`, and `liblzma-dev`.
 
-On the relay machine:
+## Installation
 
-1. Open Bale Chat Tunnel, or use the CLI if the relay has no desktop session.
-2. Log in to the same Bale account.
-3. Initialize a relay profile.
-4. Copy the relay public key.
-5. Paste the client public key into the relay profile.
-6. Start relay mode and keep it running.
-
-The client and relay must use the same session name and each side must have the
-other side's public key.
-
-### CLI Setup
-
-Use the CLI for remote relays or scripted deployments. Replace
-`PATH_TO_BINARY_FILE` with the directory that contains the downloaded `btun`
-binary.
-
-For a Linux x64 relay host, use the one-line installer:
+For a Linux x64 relay host, use the installer:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | bash
 ```
 
-The installer downloads the latest `bale-chat-tunnel-cli-linux-x64` release
-artifact, installs it as `~/.local/bin/btun`, verifies the binary, and starts
-the relay setup wizard with profile `~/.btun-relay`. Choose `relay` when asked
-for the machine role, complete Bale login, then copy the `relay_public_key`
-printed by the wizard.
+The installer downloads the latest Linux CLI release, installs it locally, runs
+relay setup for `~/.btun-relay`, and creates a user systemd service when
+available.
 
-Optional installer overrides:
+<details>
+<summary>Advanced setup</summary>
+
+Build from source:
+
+```bash
+git clone https://github.com/evokelektrique/BaleChatTunnel.git
+cd BaleChatTunnel
+flutter pub get
+make build-cli-linux-x64
+```
+
+Installer overrides:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_VERSION=v0.1.0 bash
 curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_INSTALL_DIR=/usr/local/bin BTUN_PROFILE=/etc/btun/relay bash
 curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_RUN_SETUP=0 bash
+curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_INSTALL_SERVICE=0 bash
 ```
 
-The easiest path is the interactive setup wizard. When it asks for the machine
-role, enter one of the two supported values: `client` or `relay`. The wizard
-prints this machine's public key and asks for the public key from the other
-side.
+Service commands:
+
+```bash
+systemctl --user status btun-relay
+systemctl --user restart btun-relay
+journalctl --user -u btun-relay -f
+```
+
+Set `BTUN_ENABLE_SERVICE=0` to install the service without starting it, or
+`BTUN_SERVICE_NAME=NAME` to use a different service name.
+
+Uninstall relay service and default installer files:
+
+```bash
+systemctl --user disable --now btun-relay
+rm -f ~/.config/systemd/user/btun-relay.service
+systemctl --user daemon-reload
+rm -f ~/.local/bin/btun
+rm -rf ~/.btun-relay
+```
+
+Manual CLI setup:
+
+```bash
+./bale-chat-tunnel-cli-linux-x64 login --profile .btun-relay
+./bale-chat-tunnel-cli-linux-x64 init --profile .btun-relay
+./bale-chat-tunnel-cli-linux-x64 status --profile .btun-relay
+./bale-chat-tunnel-cli-linux-x64 login --profile .btun-client
+./bale-chat-tunnel-cli-linux-x64 init --profile .btun-client --relay-public-key RELAY_PUBLIC_KEY
+./bale-chat-tunnel-cli-linux-x64 client --profile .btun-client --socks-port 1080
+./bale-chat-tunnel-cli-linux-x64 init --profile .btun-relay --client-public-key CLIENT_PUBLIC_KEY
+./bale-chat-tunnel-cli-linux-x64 relay --profile .btun-relay
+```
+
+</details>
+
+## Quick Start
+
+Use the same Bale account on both machines.
+
+The examples use the Linux CLI release binary:
+`./bale-chat-tunnel-cli-linux-x64`.
 
 On the relay machine:
 
 ```bash
-PATH_TO_BINARY_FILE/btun setup --profile .btun-relay
+./bale-chat-tunnel-cli-linux-x64 setup --profile .btun-relay
 ```
 
-Choose `relay` when asked for this machine's role. After setup, copy the
-`relay_public_key` shown by the wizard and send it to the client machine. Relay
-policy is optional and can be skipped unless you need to restrict destination
-ports or DNS behavior.
+Choose `relay`, log in to Bale, and copy the printed `relay_public_key`.
 
 On the client machine:
 
-```bash
-PATH_TO_BINARY_FILE/btun setup --profile .btun-client
-```
-
-Choose `client` when asked for this machine's role. Paste the relay public key
-when the wizard asks for `Relay public key`. Copy the `client_public_key` shown
-by the wizard and add it to the relay profile.
-
-If you skipped a key during setup, add it later with:
+Use the desktop app when possible; it is the easier setup path. If you are using
+the Linux CLI binary, run:
 
 ```bash
-PATH_TO_BINARY_FILE/btun init --profile .btun-client --relay-public-key RELAY_PUBLIC_KEY
-PATH_TO_BINARY_FILE/btun init --profile .btun-relay --client-public-key CLIENT_PUBLIC_KEY
+./bale-chat-tunnel-cli-linux-x64 setup --profile .btun-client
+./bale-chat-tunnel-cli-linux-x64 client --profile .btun-client --socks-port 1080
 ```
 
-After both sides have each other's public key, start them:
+Choose `client`, paste the relay public key, and copy the printed
+`client_public_key`.
+
+Back on the relay machine, add the client key and start the relay:
 
 ```bash
-PATH_TO_BINARY_FILE/btun relay --profile .btun-relay
-PATH_TO_BINARY_FILE/btun client --profile .btun-client --socks-port 1080
+./bale-chat-tunnel-cli-linux-x64 init --profile .btun-relay --client-public-key CLIENT_PUBLIC_KEY
+./bale-chat-tunnel-cli-linux-x64 relay --profile .btun-relay
 ```
 
-### Manual CLI Setup
-
-Use the manual commands when you want to script setup or update one value
-without going through the wizard.
-
-On the relay machine:
-
-```bash
-PATH_TO_BINARY_FILE/btun login --profile .btun-relay
-PATH_TO_BINARY_FILE/btun init --profile .btun-relay
-PATH_TO_BINARY_FILE/btun status --profile .btun-relay
-```
-
-Copy the relay public key shown by `status`.
-
-On the client machine:
-
-```bash
-PATH_TO_BINARY_FILE/btun login --profile .btun-client
-PATH_TO_BINARY_FILE/btun init --profile .btun-client
-PATH_TO_BINARY_FILE/btun status --profile .btun-client
-```
-
-Copy the client public key shown by `status`.
-
-Finish the key exchange:
-
-```bash
-PATH_TO_BINARY_FILE/btun init --profile .btun-client --peer-public-key RELAY_PUBLIC_KEY
-PATH_TO_BINARY_FILE/btun init --profile .btun-relay --peer-public-key CLIENT_PUBLIC_KEY
-```
-
-The explicit aliases are also supported:
-
-```bash
-PATH_TO_BINARY_FILE/btun init --profile .btun-client --relay-public-key RELAY_PUBLIC_KEY
-PATH_TO_BINARY_FILE/btun init --profile .btun-relay --client-public-key CLIENT_PUBLIC_KEY
-```
-
-Start the relay:
-
-```bash
-PATH_TO_BINARY_FILE/btun relay --profile .btun-relay
-```
-
-Start the client:
-
-```bash
-PATH_TO_BINARY_FILE/btun client --profile .btun-client --socks-port 1080
-```
-
-Then configure your browser or application to use:
+Configure your browser, OS, or application to use:
 
 ```text
 SOCKS5 127.0.0.1:1080
 ```
 
+## Usage
+
+Common CLI commands:
+
+```text
+./bale-chat-tunnel-cli-linux-x64 setup
+./bale-chat-tunnel-cli-linux-x64 status
+./bale-chat-tunnel-cli-linux-x64 relay
+./bale-chat-tunnel-cli-linux-x64 client --socks-port 1080
+./bale-chat-tunnel-cli-linux-x64 upload-test
+```
+
+Local source builds use a different output path:
+
+```bash
+build/cli/btun-linux-x64 setup --profile .btun-client
+```
+
+The desktop app provides the same setup flow through Settings, Key Exchange, and
+Home connection controls.
+
+## Configuration
+
+Profiles store tunnel config, Bale session state, and local runtime state. The
+default CLI profile is `.btun`; this README uses `.btun-client` and
+`.btun-relay` to keep roles separate.
+
+Important defaults:
+
+| Setting | Default |
+| --- | --- |
+| SOCKS endpoint | `127.0.0.1:1080` |
+| Transport preset | `stable` |
+| Relay allowed ports | `80`, `443` |
+| Block private relay destinations | `true` |
+| Resolve DNS on relay | `true` |
+
+Use matching session IDs on both profiles, and make sure each profile has the
+other side's public key.
+
 ## Development
 
-Install Flutter and make sure desktop support is enabled for your platform.
+Install dependencies:
 
 ```bash
-flutter pub get
-flutter test
+make pub-get
 ```
 
-Useful Makefile commands:
-
-```bash
-make test
-make build-linux-x64
-make build-windows-x64
-make build-cli-linux-x64
-make build-cli-windows-x64
-```
-
-Run the Flutter app locally:
+Run the Flutter app:
 
 ```bash
 flutter run -d linux
 ```
 
-Use the compiled CLI during development:
+Build targets:
 
 ```bash
-build/cli/btun-linux-x64 login
-build/cli/btun-linux-x64 init
-build/cli/btun-linux-x64 status
-build/cli/btun-linux-x64 client
-build/cli/btun-linux-x64 relay
+make build-linux-x64
+make build-windows-x64
+make build-android-apk
+make build-cli-linux-x64
+make build-cli-windows-x64
 ```
 
-## Architecture
+Main code locations:
 
-Bale Chat Tunnel has two sides:
+- `lib/main.dart`: Flutter app.
+- `bin/`: CLI entry point.
+- `lib/src/btun/`: tunnel runtime, protocol, SOCKS5 server, relay, config, and transport.
+- `packages/bale_client/`: Bale authentication, messaging, and file APIs.
+- `scripts/install-relay.sh`: Linux x64 relay installer.
 
-- Client: runs on your local machine and opens a SOCKS5 proxy.
-- Relay: runs on another machine and forwards traffic to the internet.
+## Testing
 
-Both sides log in to Bale, create a matching tunnel profile, exchange public
-keys, and use Bale Saved Messages as the transport channel. TCP data is framed,
-encrypted, batched into chunk files, uploaded by one side, downloaded by the
-other side, decrypted, acknowledged, and retried when needed. Bale only sees
-encrypted files.
-
-```text
-Client profile                         Relay profile
--------------                          -------------
-SOCKS5 server                          Bale poller
-TCP stream frames                      Download chunk files
-Encrypt + upload     -> Bale ->        Decrypt + reassemble
-ACK + retry          <- Bale <-        TCP relay
+```bash
+make analyze
+make test
 ```
 
-Main components:
+`make test` runs the root Flutter tests and `packages/bale_client` tests.
 
-- `lib/main.dart`: Flutter desktop UI and app controller.
-- `bin/btun.dart`: command-line entry point.
-- `lib/src/btun/`: tunnel protocol, crypto, SOCKS5 server, relay, transport,
-  config, logging, and runtime modules.
-- `packages/bale_client/`: Bale authentication, messaging, file upload, and
-  download client.
+## Troubleshooting
 
-Important behavior:
+- Confirm both machines can reach Bale.
+- Confirm both profiles use the same session ID.
+- Confirm both profiles have the other side's public key.
+- Confirm your app is using `SOCKS5 127.0.0.1:1080`.
+- Check relay logs with `journalctl --user -u btun-relay -f` when using the installer service.
 
-- X25519 keys are used for peer key exchange.
-- HKDF-SHA256 derives encryption keys.
-- AES-256-GCM encrypts tunnel chunks.
-- TCP data is framed, batched into files, acknowledged, and retried.
-- The client exposes SOCKS5 locally, usually `127.0.0.1:1080`.
-- The relay applies port and private-IP policy checks before opening outbound
-  TCP connections.
+## Contributing
 
-Because the transport is chunked file upload and download over a messenger,
-latency and throughput depend on Bale upload speed, download speed, polling, and
-rate limits.
-
-## Issues & Feedback
-
-Please use GitHub Issues for bugs, build problems, feature requests, and UI
-feedback:
+Use GitHub Issues for bugs, build problems, feature requests, and UI feedback:
 
 ```text
 https://github.com/evokelektrique/BaleChatTunnel/issues
 ```
-
-When reporting a problem, include:
-
-- operating system and version
-- app or CLI version
-- whether the problem is on the client, relay, or both
-- relevant logs with secrets and keys removed
 
 ## License
 
