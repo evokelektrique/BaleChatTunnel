@@ -1,6 +1,8 @@
 BALE_CLIENT_DIR := packages/bale_client
 BALE_SESSION ?= session.bale_client.json
 BTUN_CLI_DIR ?= build/cli
+BTUN_LINUX_X64_BUILD_DIR ?= $(BTUN_CLI_DIR)/linux-x64
+BTUN_WINDOWS_X64_BUILD_DIR ?= $(BTUN_CLI_DIR)/windows-x64
 BTUN_LINUX_X64 ?= $(BTUN_CLI_DIR)/btun-linux-x64
 BTUN_WINDOWS_X64 ?= $(BTUN_CLI_DIR)/btun-windows-x64.exe
 
@@ -127,11 +129,13 @@ build-android-apk:
 
 build-cli-linux-x64:
 	mkdir -p $(BTUN_CLI_DIR)
-	dart compile exe bin/btun.dart -o $(BTUN_LINUX_X64)
+	dart build cli --target bin/btun.dart --output $(BTUN_LINUX_X64_BUILD_DIR)
+	cp $(BTUN_LINUX_X64_BUILD_DIR)/bundle/bin/btun $(BTUN_LINUX_X64)
 
 build-cli-windows-x64:
 	mkdir -p $(BTUN_CLI_DIR)
-	dart compile exe bin/btun.dart -o $(BTUN_WINDOWS_X64)
+	dart build cli --target bin/btun.dart --output $(BTUN_WINDOWS_X64_BUILD_DIR)
+	cp $(BTUN_WINDOWS_X64_BUILD_DIR)/bundle/bin/btun.exe $(BTUN_WINDOWS_X64)
 
 check-cli-linux-x64: build-cli-linux-x64
 	./$(BTUN_LINUX_X64) help
