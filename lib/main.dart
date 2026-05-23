@@ -1120,44 +1120,23 @@ class _SettingsTabState extends State<SettingsTab> {
           final accountCard = SettingsCard(
             icon: Icons.verified_user_outlined,
             title: 'Bale Account',
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                StatusBadge(
-                  icon: Icons.account_circle_outlined,
-                  label: 'Session',
-                  value: widget.controller.isLoggedIn
-                      ? 'Logged in as user ${widget.controller.session?.userId ?? 'unknown'}'
-                      : 'Not logged in',
-                  good: widget.controller.isLoggedIn,
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: [
-                    FilledButton.icon(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: widget.controller.isLoggedIn
+                  ? OutlinedButton.icon(
                       onPressed: accountBusy || widget.controller.isRunning
-                          ? null
-                          : () => showLoginDialog(context, widget.controller),
-                      icon: const Icon(Icons.login),
-                      label: Text(
-                        widget.controller.isLoggedIn ? 'Login again' : 'Login',
-                      ),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed:
-                          accountBusy ||
-                              !widget.controller.isLoggedIn ||
-                              widget.controller.isRunning
                           ? null
                           : _logout,
                       icon: const Icon(Icons.logout),
                       label: const Text('Logout'),
+                    )
+                  : FilledButton.icon(
+                      onPressed: accountBusy || widget.controller.isRunning
+                          ? null
+                          : () => showLoginDialog(context, widget.controller),
+                      icon: const Icon(Icons.login),
+                      label: const Text('Login'),
                     ),
-                  ],
-                ),
-              ],
             ),
           );
           final tunnelCard = SettingsCard(
