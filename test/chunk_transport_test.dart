@@ -898,15 +898,15 @@ void main() {
     });
 
     expect(config.transportPreset, BtunTransportPreset.stable);
-    expect(config.chunkSize, 128 * 1024);
-    expect(config.maxInFlight, 3);
-    expect(config.pollInterval, const Duration(milliseconds: 1000));
-    expect(config.uploadMinInterval, const Duration(milliseconds: 200));
-    expect(config.uploadRateLimitPerMinute, 50);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 200));
-    expect(config.flushDelay, const Duration(milliseconds: 50));
-    expect(config.bulkFlushDelay, const Duration(milliseconds: 150));
-    expect(config.bulkChunkSize, 1024 * 1024);
+    expect(config.chunkSize, 256 * 1024);
+    expect(config.maxInFlight, 2);
+    expect(config.pollInterval, const Duration(milliseconds: 3000));
+    expect(config.uploadMinInterval, Duration.zero);
+    expect(config.uploadRateLimitPerMinute, 40);
+    expect(config.ackFlushInterval, const Duration(milliseconds: 1000));
+    expect(config.flushDelay, const Duration(milliseconds: 100));
+    expect(config.bulkFlushDelay, const Duration(milliseconds: 250));
+    expect(config.bulkChunkSize, 512 * 1024);
     expect(config.maxRetryChunks, 64);
     expect(config.maxRetryBytes, 64 * 1024 * 1024);
   });
@@ -922,22 +922,22 @@ void main() {
       'upload_rate_limit_per_minute': 45,
     });
 
-    expect(config.uploadRateLimitPerMinute, 50);
+    expect(config.uploadRateLimitPerMinute, 40);
   });
 
   test('config defaults use responsive stable uploads', () {
     final config = BtunConfig.defaults(profileDir: '.btun-test');
 
     expect(config.transportPreset, BtunTransportPreset.stable);
-    expect(config.chunkSize, 128 * 1024);
-    expect(config.maxInFlight, 3);
-    expect(config.pollInterval, const Duration(milliseconds: 1000));
-    expect(config.uploadMinInterval, const Duration(milliseconds: 200));
-    expect(config.uploadRateLimitPerMinute, 50);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 200));
-    expect(config.flushDelay, const Duration(milliseconds: 50));
-    expect(config.bulkFlushDelay, const Duration(milliseconds: 150));
-    expect(config.bulkChunkSize, 1024 * 1024);
+    expect(config.chunkSize, 256 * 1024);
+    expect(config.maxInFlight, 2);
+    expect(config.pollInterval, const Duration(milliseconds: 3000));
+    expect(config.uploadMinInterval, Duration.zero);
+    expect(config.uploadRateLimitPerMinute, 40);
+    expect(config.ackFlushInterval, const Duration(milliseconds: 1000));
+    expect(config.flushDelay, const Duration(milliseconds: 100));
+    expect(config.bulkFlushDelay, const Duration(milliseconds: 250));
+    expect(config.bulkChunkSize, 512 * 1024);
     expect(config.maxRetryChunks, 64);
     expect(config.maxRetryBytes, 64 * 1024 * 1024);
   });
@@ -959,15 +959,15 @@ void main() {
     expect(interactive.bulkFlushDelay, const Duration(milliseconds: 50));
 
     final stable = base.applyTransportPreset(BtunTransportPreset.stable);
-    expect(stable.chunkSize, 128 * 1024);
-    expect(stable.bulkChunkSize, 1024 * 1024);
-    expect(stable.maxInFlight, 3);
-    expect(stable.pollInterval, const Duration(milliseconds: 1000));
-    expect(stable.uploadMinInterval, const Duration(milliseconds: 200));
-    expect(stable.uploadRateLimitPerMinute, 50);
-    expect(stable.ackFlushInterval, const Duration(milliseconds: 200));
-    expect(stable.flushDelay, const Duration(milliseconds: 50));
-    expect(stable.bulkFlushDelay, const Duration(milliseconds: 150));
+    expect(stable.chunkSize, 256 * 1024);
+    expect(stable.bulkChunkSize, 512 * 1024);
+    expect(stable.maxInFlight, 2);
+    expect(stable.pollInterval, const Duration(milliseconds: 3000));
+    expect(stable.uploadMinInterval, Duration.zero);
+    expect(stable.uploadRateLimitPerMinute, 40);
+    expect(stable.ackFlushInterval, const Duration(milliseconds: 1000));
+    expect(stable.flushDelay, const Duration(milliseconds: 100));
+    expect(stable.bulkFlushDelay, const Duration(milliseconds: 250));
 
     final resilient = base.applyTransportPreset(BtunTransportPreset.resilient);
     expect(resilient.chunkSize, 256 * 1024);
