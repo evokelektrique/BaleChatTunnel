@@ -147,13 +147,16 @@ class BtunSetupWizard {
 
     writeln('');
     writeln('Transport/performance');
+    writeln('1) Interactive - lowest latency');
+    writeln('2) Stable - recommended');
+    writeln('3) Resilient - safest upload cadence');
+    writeln('4) Custom - edit every value');
     final transportPreset = await promptTransportPreset(
-      'Stability preset',
+      'Stability preset number',
       defaultValue: defaults.transportPreset,
       help:
-          'interactive favors latency. stable is recommended for fewer, '
-          'larger uploads. resilient uses the safest upload cadence. custom '
-          'lets you edit every transport value manually.',
+          'Enter 1, 2, 3, or 4. Names still work: interactive, stable, '
+          'resilient, custom.',
     );
     final performanceDefaults = defaults.applyTransportPreset(transportPreset);
     var chunkSize = performanceDefaults.chunkSize;
@@ -510,22 +513,25 @@ BtunTransportPreset parseTransportPreset(
   final value = input.trim().toLowerCase();
   if (value.isEmpty) return defaultValue;
   return switch (value) {
+    '1' ||
     'interactive' ||
     'i' ||
     'responsive' ||
     'fast' => BtunTransportPreset.interactive,
+    '2' ||
     'stable' ||
     's' ||
     'balanced' ||
     'balance' ||
     'medium' => BtunTransportPreset.stable,
+    '3' ||
     'resilient' ||
     'r' ||
     'conservative' ||
     'slow' => BtunTransportPreset.resilient,
-    'custom' => BtunTransportPreset.custom,
+    '4' || 'custom' => BtunTransportPreset.custom,
     _ => throw const FormatException(
-      'enter one of: interactive, stable, resilient, custom',
+      'enter 1, 2, 3, 4, or one of: interactive, stable, resilient, custom',
     ),
   };
 }

@@ -41,10 +41,7 @@ void main() {
         BtunTransportPreset.stable,
       );
       expect(
-        parseTransportPreset(
-          'interactive',
-          defaultValue: BtunTransportPreset.stable,
-        ),
+        parseTransportPreset('1', defaultValue: BtunTransportPreset.stable),
         BtunTransportPreset.interactive,
       );
       expect(
@@ -55,8 +52,12 @@ void main() {
         BtunTransportPreset.stable,
       );
       expect(
-        parseTransportPreset('slow', defaultValue: BtunTransportPreset.custom),
+        parseTransportPreset('3', defaultValue: BtunTransportPreset.custom),
         BtunTransportPreset.resilient,
+      );
+      expect(
+        parseTransportPreset('4', defaultValue: BtunTransportPreset.stable),
+        BtunTransportPreset.custom,
       );
       expect(
         () => parseTransportPreset(
@@ -150,7 +151,7 @@ void main() {
             'peer-key',
             '127.0.0.2',
             '1081',
-            'custom',
+            '4',
             '111111',
             '222222',
             '3',
