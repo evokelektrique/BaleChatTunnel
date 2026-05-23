@@ -61,11 +61,6 @@ void main() {
     );
     final relay = TcpRelay(
       chunkTransport: relayChunkTransport,
-      policy: RelayPolicy(
-        allowPorts: {server.port},
-        blockPrivateIps: false,
-        dnsOnRelay: true,
-      ),
       logger: const Logger(),
     );
     await relayChunkTransport.start();

@@ -26,12 +26,12 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   final String sessionId;
   final Direction sendDirection;
   final Direction receiveDirection;
-  final Duration pollInterval;
+  Duration pollInterval;
   final StateDb stateDb;
-  final Duration uploadMinInterval;
-  final int uploadRateLimitPerMinute;
+  Duration uploadMinInterval;
+  int uploadRateLimitPerMinute;
   final Logger logger;
-  final int maxConcurrentUploads;
+  int maxConcurrentUploads;
   final int? accountUserId;
 
   final StreamController<IncomingTunnelFile> _incoming =
@@ -69,6 +69,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
 
   @override
   Future<void> start() async {
+    if (_updates != null) return;
     _updates = client.updates.listen((update) {
       if (update case BaleMessageUpdate(:final message)) {
         unawaited(_maybeDownload(message));
@@ -76,6 +77,24 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     });
     _pollTimer = Timer.periodic(pollInterval, (_) => unawaited(_poll()));
     unawaited(_poll());
+  }
+
+  void updateSettings({
+    required Duration pollInterval,
+    required Duration uploadMinInterval,
+    required int uploadRateLimitPerMinute,
+    required int maxConcurrentUploads,
+  }) {
+    final pollChanged = this.pollInterval != pollInterval;
+    this.pollInterval = pollInterval;
+    this.uploadMinInterval = uploadMinInterval;
+    this.uploadRateLimitPerMinute = uploadRateLimitPerMinute;
+    this.maxConcurrentUploads = maxConcurrentUploads;
+    if (pollChanged && _updates != null) {
+      _pollTimer?.cancel();
+      _pollTimer = Timer.periodic(pollInterval, (_) => unawaited(_poll()));
+    }
+    _pumpUploads();
   }
 
   @override
@@ -406,20 +425,28 @@ class LoadBalancedSavedMessagesTransport implements TunnelTransport {
   LoadBalancedSavedMessagesTransport({
     required List<TunnelTransport> transports,
     required this.logger,
-  }) : _transports = transports;
+  }) {
+    var syntheticId = -1;
+    for (final transport in transports) {
+      final userId = transport is BaleSavedMessagesTransport
+          ? transport.accountUserId
+          : null;
+      _transports[userId ?? syntheticId--] = transport;
+    }
+  }
 
-  final List<TunnelTransport> _transports;
+  final _transports = <int, TunnelTransport>{};
   final Logger logger;
   final StreamController<IncomingTunnelFile> _incoming =
       StreamController<IncomingTunnelFile>.broadcast();
-  final _subscriptions = <StreamSubscription<IncomingTunnelFile>>[];
+  final _subscriptions = <int, StreamSubscription<IncomingTunnelFile>>{};
   var _nextUploadIndex = 0;
   var _started = false;
 
   @override
   bool get isBackingOff =>
       _transports.isNotEmpty &&
-      _transports.every((transport) => transport.isBackingOff);
+      _transports.values.every((transport) => transport.isBackingOff);
 
   @override
   Future<void> start() async {
@@ -428,15 +455,51 @@ class LoadBalancedSavedMessagesTransport implements TunnelTransport {
     }
     if (_started) return;
     _started = true;
-    for (final transport in _transports) {
-      _subscriptions.add(
-        transport.incomingFiles().listen(
-          _incoming.add,
-          onError: _incoming.addError,
-        ),
-      );
-      await transport.start();
+    for (final entry in _transports.entries) {
+      await _startAccount(entry.key, entry.value);
     }
+  }
+
+  Future<void> addAccount(int userId, TunnelTransport transport) async {
+    final existing = _transports[userId];
+    if (existing != null) {
+      await removeAccount(userId);
+    }
+    _transports[userId] = transport;
+    if (_started) await _startAccount(userId, transport);
+  }
+
+  Future<void> removeAccount(int userId) async {
+    final transport = _transports.remove(userId);
+    await _subscriptions.remove(userId)?.cancel();
+    if (transport != null) await transport.close();
+    if (_nextUploadIndex >= _transports.length) _nextUploadIndex = 0;
+  }
+
+  void updateAccountSettings({
+    required Duration pollInterval,
+    required Duration uploadMinInterval,
+    required int uploadRateLimitPerMinute,
+    required int maxConcurrentUploads,
+  }) {
+    for (final transport in _transports.values) {
+      if (transport is! BaleSavedMessagesTransport) continue;
+      transport.updateSettings(
+        pollInterval: pollInterval,
+        uploadMinInterval: uploadMinInterval,
+        uploadRateLimitPerMinute: uploadRateLimitPerMinute,
+        maxConcurrentUploads: maxConcurrentUploads,
+      );
+    }
+  }
+
+  Future<void> _startAccount(int userId, TunnelTransport transport) async {
+    await _subscriptions[userId]?.cancel();
+    _subscriptions[userId] = transport.incomingFiles().listen(
+      _incoming.add,
+      onError: _incoming.addError,
+    );
+    await transport.start();
   }
 
   @override
@@ -448,15 +511,16 @@ class LoadBalancedSavedMessagesTransport implements TunnelTransport {
       throw Exception('no enabled Bale accounts; add an account first');
     }
     Object? lastError;
-    for (var attempt = 0; attempt < _transports.length; attempt++) {
-      final index = (_nextUploadIndex + attempt) % _transports.length;
-      final transport = _transports[index];
+    final transports = _transports.values.toList(growable: false);
+    for (var attempt = 0; attempt < transports.length; attempt++) {
+      final index = (_nextUploadIndex + attempt) % transports.length;
+      final transport = transports[index];
       if (transport.isBackingOff && attempt < _transports.length - 1) {
         continue;
       }
       try {
         await transport.sendFile(file);
-        _nextUploadIndex = (index + 1) % _transports.length;
+        _nextUploadIndex = (index + 1) % transports.length;
         return;
       } on Object catch (error) {
         lastError = error;
@@ -468,13 +532,14 @@ class LoadBalancedSavedMessagesTransport implements TunnelTransport {
 
   @override
   Future<void> close() async {
-    for (final subscription in _subscriptions) {
+    for (final subscription in _subscriptions.values) {
       await subscription.cancel();
     }
     _subscriptions.clear();
-    for (final transport in _transports) {
+    for (final transport in _transports.values) {
       await transport.close();
     }
+    _transports.clear();
     await _incoming.close();
   }
 }

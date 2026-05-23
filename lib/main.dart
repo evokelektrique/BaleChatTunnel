@@ -10,7 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 const appTitle = 'Bale Chat Tunnel';
-const appVersionLabel = '0.2.0';
+const appVersionLabel = '0.2.1';
 const appRepositoryUrl = 'https://github.com/evokelektrique/BaleChatTunnel';
 const settingsControlShape = RoundedRectangleBorder(
   borderRadius: BorderRadius.all(Radius.circular(8)),
@@ -300,6 +300,7 @@ class BtunAppController extends ChangeNotifier {
       await next.save(configPath);
       config = next;
       _log(LogLevel.info, 'Settings saved.');
+      await _reloadRuntimeIfRunning(next);
     });
   }
 
@@ -465,7 +466,6 @@ class BtunAppController extends ChangeNotifier {
   }
 
   Future<void> removeAccount(int userId) async {
-    await stopClient();
     await _guard(() async {
       final current = config;
       if (current == null) return;
@@ -482,6 +482,7 @@ class BtunAppController extends ChangeNotifier {
       config = next;
       session = accountSessions.isEmpty ? null : accountSessions.values.first;
       _log(LogLevel.info, 'Removed account $userId.');
+      await _reloadRuntimeIfRunning(next);
     });
   }
 
@@ -496,7 +497,35 @@ class BtunAppController extends ChangeNotifier {
         LogLevel.info,
         '${enabled ? 'Enabled' : 'Disabled'} account $userId.',
       );
+      await _reloadRuntimeIfRunning(next);
     });
+  }
+
+  Future<void> _reloadRuntimeIfRunning(BtunConfig next) async {
+    final current = _runtime;
+    if (current == null) return;
+    final mode = await current.reloadConfig(
+      next.copyWith(role: BtunRole.client),
+    );
+    if (mode != BtunConfigReloadMode.rebuild) return;
+    status = RuntimeStatus.loading;
+    notifyListeners();
+    _log(LogLevel.warn, 'Restarting tunnel for config changes.');
+    final runtime = await createBtunClientRuntime(
+      config: next.copyWith(role: BtunRole.client),
+      logger: UiLogger(_log),
+    );
+    await current.close();
+    _runtime = null;
+    try {
+      await runtime.start();
+    } on Object {
+      await runtime.close();
+      rethrow;
+    }
+    _runtime = runtime;
+    status = RuntimeStatus.running;
+    _log(LogLevel.info, 'Tunnel reloaded.');
   }
 
   void clearLogs() {
@@ -548,6 +577,7 @@ class BtunAppController extends ChangeNotifier {
     config = next;
     accountSessions[userId] = signedIn;
     session = signedIn;
+    await _reloadRuntimeIfRunning(next);
   }
 
   Future<void> _loadPrefs() async {

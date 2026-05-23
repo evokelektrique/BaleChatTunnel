@@ -19,7 +19,6 @@ client -> Bale -> relay -> Internet
 - Dart CLI for relays, servers, and scripted setup.
 - Encrypted chunk transport over Bale Saved Messages.
 - Local SOCKS5 endpoint, defaulting to `127.0.0.1:1080`.
-- Relay policy for allowed ports, private IP blocking, and relay-side DNS.
 
 ## Requirements
 
@@ -59,7 +58,7 @@ make build-cli-linux-x64
 Installer overrides:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_VERSION=v0.2.0 bash
+curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_VERSION=v0.2.1 bash
 curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_INSTALL_DIR=/usr/local/bin BTUN_PROFILE=/etc/btun/relay bash
 curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_RUN_SETUP=0 bash
 curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_INSTALL_SERVICE=0 bash
@@ -82,7 +81,7 @@ Uninstall relay service and default installer files:
 systemctl --user disable --now btun-relay
 rm -f ~/.config/systemd/user/btun-relay.service
 systemctl --user daemon-reload
-rm -f ~/.local/bin/<installed-cli-binary>
+rm -f ~/.local/bin/bale-chat-tunnel-cli-linux-x64
 rm -rf ~/.btun-relay
 ```
 
@@ -171,9 +170,6 @@ Important defaults:
 | --- | --- |
 | SOCKS endpoint | `127.0.0.1:1080` |
 | Transport preset | `stable` |
-| Relay allowed ports | `80`, `443` |
-| Block private relay destinations | `true` |
-| Resolve DNS on relay | `true` |
 
 Use matching session IDs on both profiles, and make sure each profile has the
 other side's public key.

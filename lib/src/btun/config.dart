@@ -117,9 +117,6 @@ class BtunConfig {
     required this.maxRetryChunks,
     required this.maxRetryBytes,
     required this.maxStreams,
-    required this.allowPorts,
-    required this.blockPrivateIps,
-    required this.dnsOnRelay,
   });
 
   final BtunRole role;
@@ -145,9 +142,6 @@ class BtunConfig {
   final int maxRetryChunks;
   final int maxRetryBytes;
   final int maxStreams;
-  final List<int> allowPorts;
-  final bool blockPrivateIps;
-  final bool dnsOnRelay;
 
   static String defaultProfileDir() => '.btun';
   static String defaultConfigPath(String profileDir) =>
@@ -184,9 +178,6 @@ class BtunConfig {
       maxRetryChunks: 64,
       maxRetryBytes: 64 * 1024 * 1024,
       maxStreams: 4,
-      allowPorts: const [80, 443],
-      blockPrivateIps: true,
-      dnsOnRelay: true,
     );
   }
 
@@ -216,9 +207,6 @@ class BtunConfig {
 
   static BtunConfig fromJson(Map<String, Object?> json) {
     final stable = btunTransportPresetSpecs[BtunTransportPreset.stable]!;
-    final relay = json['relay'] is Map<String, Object?>
-        ? json['relay']! as Map<String, Object?>
-        : const <String, Object?>{};
     final configuredChunkSize = json['chunk_size'] as int?;
     final configuredPollMs = json['poll_interval_ms'] as int?;
     final configuredRetryMs = json['retry_timeout_ms'] as int?;
@@ -283,12 +271,6 @@ class BtunConfig {
       maxRetryChunks: configuredMaxRetryChunks ?? 64,
       maxRetryBytes: configuredMaxRetryBytes ?? 64 * 1024 * 1024,
       maxStreams: json['max_streams'] as int? ?? 4,
-      allowPorts: [
-        for (final port in relay['allow_ports'] as List? ?? const [80, 443])
-          port as int,
-      ],
-      blockPrivateIps: relay['block_private_ips'] as bool? ?? true,
-      dnsOnRelay: relay['dns_on_relay'] as bool? ?? true,
     );
     return config.copyWith(transportPreset: _detectTransportPreset(config));
   }
@@ -328,11 +310,6 @@ class BtunConfig {
     'max_retry_chunks': maxRetryChunks,
     'max_retry_bytes': maxRetryBytes,
     'max_streams': maxStreams,
-    'relay': {
-      'allow_ports': allowPorts,
-      'block_private_ips': blockPrivateIps,
-      'dns_on_relay': dnsOnRelay,
-    },
   };
 
   BtunConfig copyWith({
@@ -359,9 +336,6 @@ class BtunConfig {
     int? maxRetryChunks,
     int? maxRetryBytes,
     int? maxStreams,
-    List<int>? allowPorts,
-    bool? blockPrivateIps,
-    bool? dnsOnRelay,
   }) => BtunConfig(
     role: role ?? this.role,
     accounts: accounts ?? this.accounts,
@@ -387,9 +361,6 @@ class BtunConfig {
     maxRetryChunks: maxRetryChunks ?? this.maxRetryChunks,
     maxRetryBytes: maxRetryBytes ?? this.maxRetryBytes,
     maxStreams: maxStreams ?? this.maxStreams,
-    allowPorts: allowPorts ?? this.allowPorts,
-    blockPrivateIps: blockPrivateIps ?? this.blockPrivateIps,
-    dnsOnRelay: dnsOnRelay ?? this.dnsOnRelay,
   );
 
   List<BtunAccountConfig> get enabledAccounts =>

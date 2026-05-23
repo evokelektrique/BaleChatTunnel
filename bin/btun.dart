@@ -299,6 +299,9 @@ class BtunCli {
     final userId = _accountUserIdArg();
     await _updateConfig((config) => config.setAccountEnabled(userId, enabled));
     stdout.writeln('${enabled ? 'Enabled' : 'Disabled'} account $userId');
+    stdout.writeln(
+      'Running clients/relays will reload this change automatically.',
+    );
   }
 
   int _accountUserIdArg() {
@@ -316,41 +319,75 @@ class BtunCli {
   Future<void> _runClient() async {
     stdout.writeln('Loading client config...');
     final config = await _loadConfig(role: BtunRole.client);
+    final configPath = _configPath();
     stdout.writeln(
       'Preparing Bale transport for session ${config.sessionId}...',
     );
-    final runtime = await _runtime(
+    var runtime = await _runtime(
       config,
       send: Direction.c2r,
       receive: Direction.r2c,
     );
-    final client = BtunClient(
+    var client = BtunClient(
       config: config,
       chunkTransport: runtime.chunkTransport,
     );
-    final server = Socks5Server(
+    var server = Socks5Server(
       host: config.socksHost,
       port: int.parse(_value('socks-port') ?? config.socksPort.toString()),
       client: client,
       logger: Logger(),
     );
+    Future<void> rebuild(BtunConfig next) async {
+      stdout.writeln('Config change requires client rebuild.');
+      await server.close();
+      await runtime.close();
+      runtime = await _runtime(
+        next,
+        send: Direction.c2r,
+        receive: Direction.r2c,
+      );
+      client = BtunClient(config: next, chunkTransport: runtime.chunkTransport);
+      server = Socks5Server(
+        host: next.socksHost,
+        port: int.parse(_value('socks-port') ?? next.socksPort.toString()),
+        client: client,
+        logger: Logger(),
+      );
+      await server.start();
+      await runtime.connectAll();
+      await runtime.start();
+      stdout.writeln('Client reloaded for session ${next.sessionId}');
+    }
+
     await server.start();
     stdout.writeln('SOCKS5 listening on ${server.host}:${server.port}');
-    final stateSubs = runtime.bales.map((bale) {
-      final userId = bale.session?.userId ?? 'unknown';
-      return bale.updates.listen((update) {
-        if (update case BaleConnectionStateUpdate(:final state)) {
-          stdout.writeln('Bale account $userId connection: ${state.name}');
-        }
-      });
-    }).toList();
+    var stateSubs = _watchBaleStates(runtime);
+    BtunConfigWatcher? watcher;
     try {
       stdout.writeln('Connecting to Bale...');
       await runtime.connectAll();
       await runtime.start();
+      watcher = BtunConfigWatcher(
+        path: configPath,
+        onChanged: (next) async {
+          final live = await runtime.reloadConfig(
+            next.copyWith(role: BtunRole.client),
+          );
+          if (live == BtunConfigReloadMode.rebuild) {
+            for (final sub in stateSubs) {
+              await sub.cancel();
+            }
+            await rebuild(next.copyWith(role: BtunRole.client));
+            stateSubs = _watchBaleStates(runtime);
+          }
+        },
+      );
+      await watcher.start();
       stdout.writeln('Client ready for session ${config.sessionId}');
       await _waitForSignal();
     } finally {
+      await watcher?.close();
       for (final sub in stateSubs) {
         await sub.cancel();
       }
@@ -361,35 +398,62 @@ class BtunCli {
 
   Future<void> _runRelay() async {
     final config = await _loadConfig(role: BtunRole.relay);
+    final configPath = _configPath();
     stdout.writeln('Preparing relay for session ${config.sessionId}...');
-    final runtime = await _runtime(
+    var runtime = await _runtime(
       config,
       send: Direction.r2c,
       receive: Direction.c2r,
     );
-    final relay = TcpRelay(
+    var relay = TcpRelay(
       chunkTransport: runtime.chunkTransport,
-      policy: RelayPolicy.fromConfig(config),
       logger: Logger(),
     );
-    final stateSubs = runtime.bales.map((bale) {
-      final userId = bale.session?.userId ?? 'unknown';
-      return bale.updates.listen((update) {
-        if (update case BaleConnectionStateUpdate(:final state)) {
-          stdout.writeln('Bale account $userId connection: ${state.name}');
-        }
-      });
-    }).toList();
+    var stateSubs = _watchBaleStates(runtime);
+    BtunConfigWatcher? watcher;
     try {
       stdout.writeln('Connecting to Bale...');
       await runtime.connectAll();
       await runtime.start();
       await relay.start();
+      watcher = BtunConfigWatcher(
+        path: configPath,
+        onChanged: (next) async {
+          final relayConfig = next.copyWith(role: BtunRole.relay);
+          final mode = await runtime.reloadConfig(relayConfig);
+          if (mode == BtunConfigReloadMode.rebuild) {
+            stdout.writeln('Config change requires relay rebuild.');
+            for (final sub in stateSubs) {
+              await sub.cancel();
+            }
+            await relay.close();
+            await runtime.close();
+            runtime = await _runtime(
+              relayConfig,
+              send: Direction.r2c,
+              receive: Direction.c2r,
+            );
+            relay = TcpRelay(
+              chunkTransport: runtime.chunkTransport,
+              logger: Logger(),
+            );
+            await runtime.connectAll();
+            await runtime.start();
+            await relay.start();
+            stateSubs = _watchBaleStates(runtime);
+            stdout.writeln(
+              'Relay reloaded for session ${relayConfig.sessionId}',
+            );
+          }
+        },
+      );
+      await watcher.start();
       stdout.writeln(
         'Relay watching Saved Messages for session ${config.sessionId}',
       );
       await _waitForSignal();
     } finally {
+      await watcher?.close();
       for (final sub in stateSubs) {
         await sub.cancel();
       }
@@ -409,6 +473,7 @@ class BtunCli {
       config: config,
       chunkTransport: runtime.chunkTransport,
     );
+    await runtime.connectAll();
     await runtime.start();
     final response = await client.requestBytes(
       'example.com',
@@ -423,14 +488,16 @@ class BtunCli {
   }
 
   Future<BtunConfig> _loadConfig({BtunRole? role}) async {
-    final profile = _profileDir();
-    final path = _value('config') ?? BtunConfig.defaultConfigPath(profile);
+    final path = _configPath();
     var config = await BtunConfig.load(path);
     if (role != null) config = config.copyWith(role: role);
     final sessionId = _value('session-id');
     if (sessionId != null) config = config.copyWith(sessionId: sessionId);
     return config;
   }
+
+  String _configPath() =>
+      _value('config') ?? BtunConfig.defaultConfigPath(_profileDir());
 
   Future<BtunRuntime> _runtime(
     BtunConfig config, {
@@ -487,7 +554,27 @@ class BtunCli {
       bulkFlushDelay: config.bulkFlushDelay,
       ackDelay: config.ackFlushInterval,
     );
-    return BtunRuntime(bale, bales, state, transport, chunkTransport);
+    return BtunRuntime(
+      config,
+      send,
+      receive,
+      bale,
+      bales,
+      state,
+      transport,
+      chunkTransport,
+    );
+  }
+
+  List<StreamSubscription<BaleUpdate>> _watchBaleStates(BtunRuntime runtime) {
+    return runtime.bales.map((bale) {
+      final userId = bale.session?.userId ?? 'unknown';
+      return bale.updates.listen((update) {
+        if (update case BaleConnectionStateUpdate(:final state)) {
+          stdout.writeln('Bale account $userId connection: ${state.name}');
+        }
+      });
+    }).toList();
   }
 
   Future<List<BaleClient>> _restoreAccountClients(BtunConfig config) async {
@@ -626,6 +713,9 @@ Usage:
 
 class BtunRuntime {
   BtunRuntime(
+    this.config,
+    this.sendDirection,
+    this.receiveDirection,
     this.bale,
     this.bales,
     this.stateDb,
@@ -633,6 +723,9 @@ class BtunRuntime {
     this.chunkTransport,
   );
 
+  BtunConfig config;
+  final Direction sendDirection;
+  final Direction receiveDirection;
   final BaleClient bale;
   final List<BaleClient> bales;
   final StateDb stateDb;
@@ -654,6 +747,83 @@ class BtunRuntime {
   }
 
   Future<void> start() => chunkTransport.start();
+
+  Future<BtunConfigReloadMode> reloadConfig(BtunConfig nextConfig) async {
+    final diff = BtunConfigDiff.compare(config, nextConfig);
+    if (!diff.hasChanges) return BtunConfigReloadMode.none;
+    if (diff.requiresRebuild) {
+      stdout.writeln(
+        'config changed; rebuild required: ${diff.reasons.join(', ')}',
+      );
+      return BtunConfigReloadMode.rebuild;
+    }
+    stdout.writeln('config changed; live reload: ${diff.reasons.join(', ')}');
+    await _reloadAccounts(nextConfig);
+    transport.updateAccountSettings(
+      pollInterval: nextConfig.pollInterval,
+      uploadMinInterval: nextConfig.uploadMinInterval,
+      uploadRateLimitPerMinute: nextConfig.uploadRateLimitPerMinute,
+      maxConcurrentUploads: nextConfig.maxInFlight,
+    );
+    config = nextConfig;
+    return BtunConfigReloadMode.live;
+  }
+
+  Future<void> _reloadAccounts(BtunConfig nextConfig) async {
+    final enabled = {
+      for (final account in nextConfig.enabledAccounts) account.userId: account,
+    };
+    for (final client in bales.toList()) {
+      final userId = client.session?.userId;
+      if (userId == null || !enabled.containsKey(userId)) {
+        if (bales.length == 1) {
+          stdout.writeln('ignored removal of last active Bale account $userId');
+          continue;
+        }
+        await transport.removeAccount(userId!);
+        bales.remove(client);
+        await client.close();
+        stdout.writeln('removed Bale account $userId from runtime');
+      }
+    }
+    final active = {for (final client in bales) client.session?.userId};
+    for (final account in enabled.values) {
+      if (active.contains(account.userId)) continue;
+      final client = BaleClient(
+        credentialsStore: FileBaleCredentialsStore(account.sessionFile),
+      );
+      try {
+        final restored = await client.restoreSession(connect: false);
+        if (restored?.userId != account.userId) {
+          await client.close();
+          stdout.writeln(
+            'skipped Bale account ${account.userId}: session mismatch',
+          );
+          continue;
+        }
+        await client.connect().timeout(const Duration(seconds: 20));
+        final accountTransport = BaleSavedMessagesTransport(
+          client: client,
+          sessionId: nextConfig.sessionId,
+          sendDirection: sendDirection,
+          receiveDirection: receiveDirection,
+          pollInterval: nextConfig.pollInterval,
+          stateDb: stateDb,
+          uploadMinInterval: nextConfig.uploadMinInterval,
+          uploadRateLimitPerMinute: nextConfig.uploadRateLimitPerMinute,
+          logger: Logger(),
+          maxConcurrentUploads: nextConfig.maxInFlight,
+          accountUserId: account.userId,
+        );
+        await transport.addAccount(account.userId, accountTransport);
+        bales.add(client);
+        stdout.writeln('added Bale account ${account.userId} to runtime');
+      } on Object catch (error) {
+        await client.close();
+        stdout.writeln('failed to add Bale account ${account.userId}: $error');
+      }
+    }
+  }
 
   Future<void> close() async {
     await chunkTransport.close();

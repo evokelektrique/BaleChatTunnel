@@ -4,6 +4,7 @@ import 'package:bale_client/bale_client.dart';
 
 import 'chunk_transport.dart';
 import 'config.dart';
+import 'config_reload.dart';
 import 'crypto.dart';
 import 'logger.dart';
 import 'protocol.dart';
@@ -22,9 +23,11 @@ class BtunClientRuntime {
     required this.tunnelClient,
     required this.socksServer,
     required this.logger,
+    required this.config,
   });
 
-  final BaleClient bale;
+  BtunConfig config;
+  BaleClient bale;
   final List<BaleClient> accountClients;
   final StateDb stateDb;
   final LoadBalancedSavedMessagesTransport transport;
@@ -32,6 +35,7 @@ class BtunClientRuntime {
   final BtunClient tunnelClient;
   final Socks5Server socksServer;
   final Logger logger;
+  final _stateSubs = <int, StreamSubscription<BaleUpdate>>{};
 
   String get host => socksServer.host;
   int get port => socksServer.port;
@@ -39,18 +43,11 @@ class BtunClientRuntime {
   Future<void> start() async {
     await socksServer.start();
     logger.info('SOCKS5 listening on ${socksServer.host}:${socksServer.port}');
-    final stateSubs = <StreamSubscription<BaleUpdate>>[];
     try {
       logger.info('Connecting to Bale...');
       for (final client in accountClients) {
         final userId = client.session?.userId ?? 'unknown';
-        stateSubs.add(
-          client.updates.listen((update) {
-            if (update case BaleConnectionStateUpdate(:final state)) {
-              logger.info('Bale account $userId connection: ${state.name}');
-            }
-          }),
-        );
+        _watchState(client);
         await client.connect().timeout(
           const Duration(seconds: 20),
           onTimeout: () {
@@ -65,14 +62,108 @@ class BtunClientRuntime {
     } on Object {
       await socksServer.close();
       rethrow;
-    } finally {
-      for (final sub in stateSubs) {
-        await sub.cancel();
+    }
+  }
+
+  Future<BtunConfigReloadMode> reloadConfig(BtunConfig nextConfig) async {
+    final diff = BtunConfigDiff.compare(config, nextConfig);
+    if (!diff.hasChanges) return BtunConfigReloadMode.none;
+    if (diff.requiresRebuild) {
+      logger.warn(
+        'config changed; runtime rebuild required: ${diff.reasons.join(', ')}',
+      );
+      return BtunConfigReloadMode.rebuild;
+    }
+    logger.info(
+      'config changed; applying live reload: ${diff.reasons.join(', ')}',
+    );
+    await _reloadAccounts(nextConfig);
+    transport.updateAccountSettings(
+      pollInterval: nextConfig.pollInterval,
+      uploadMinInterval: nextConfig.uploadMinInterval,
+      uploadRateLimitPerMinute: nextConfig.uploadRateLimitPerMinute,
+      maxConcurrentUploads: nextConfig.maxInFlight,
+    );
+    config = nextConfig;
+    return BtunConfigReloadMode.live;
+  }
+
+  Future<void> _reloadAccounts(BtunConfig nextConfig) async {
+    final enabled = {
+      for (final account in nextConfig.enabledAccounts) account.userId: account,
+    };
+    for (final client in accountClients.toList()) {
+      final userId = client.session?.userId;
+      if (userId == null || !enabled.containsKey(userId)) {
+        if (accountClients.length == 1) {
+          logger.warn('ignored removal of last active Bale account $userId');
+          continue;
+        }
+        await transport.removeAccount(userId!);
+        await _stateSubs.remove(userId)?.cancel();
+        accountClients.remove(client);
+        await client.close();
+        logger.info('removed Bale account $userId from runtime');
+      }
+    }
+    final active = {
+      for (final client in accountClients) client.session?.userId,
+    };
+    for (final account in enabled.values) {
+      if (active.contains(account.userId)) continue;
+      final client = BaleClient(
+        credentialsStore: FileBaleCredentialsStore(account.sessionFile),
+      );
+      try {
+        final restored = await client.restoreSession();
+        if (restored?.userId != account.userId) {
+          await client.close();
+          logger.warn(
+            'skipped Bale account ${account.userId}: session mismatch',
+          );
+          continue;
+        }
+        await client.connect().timeout(const Duration(seconds: 20));
+        final accountTransport = BaleSavedMessagesTransport(
+          client: client,
+          sessionId: nextConfig.sessionId,
+          sendDirection: Direction.c2r,
+          receiveDirection: Direction.r2c,
+          pollInterval: nextConfig.pollInterval,
+          stateDb: stateDb,
+          uploadMinInterval: nextConfig.uploadMinInterval,
+          uploadRateLimitPerMinute: nextConfig.uploadRateLimitPerMinute,
+          logger: logger,
+          maxConcurrentUploads: nextConfig.maxInFlight,
+          accountUserId: account.userId,
+        );
+        await transport.addAccount(account.userId, accountTransport);
+        accountClients.add(client);
+        _watchState(client);
+        if (accountClients.length == 1) bale = client;
+        logger.info('added Bale account ${account.userId} to runtime');
+      } on Object catch (error) {
+        await client.close();
+        logger.warn('failed to add Bale account ${account.userId}: $error');
       }
     }
   }
 
+  void _watchState(BaleClient client) {
+    final userId = client.session?.userId;
+    if (userId == null || _stateSubs.containsKey(userId)) return;
+    _stateSubs[userId] = client.updates.listen((update) {
+      if (update case BaleConnectionStateUpdate(:final state)) {
+        logger.info('Bale account $userId connection: ${state.name}');
+      }
+    });
+  }
+
   Future<void> close() async {
+    for (final sub in _stateSubs.values) {
+      await sub.cancel();
+    }
+    _stateSubs.clear();
     await socksServer.close();
     await chunkTransport.close();
     await transport.close();
@@ -154,6 +245,7 @@ Future<BtunClientRuntime> createBtunClientRuntime({
     tunnelClient: client,
     socksServer: server,
     logger: logger,
+    config: config,
   );
 }
 

@@ -101,9 +101,6 @@ void main() {
         BtunConfig.defaultConfigPath(temp.path),
       );
       expect(config.role, BtunRole.relay);
-      expect(config.allowPorts, [80, 443]);
-      expect(config.blockPrivateIps, isTrue);
-      expect(config.dnsOnRelay, isTrue);
       expect(config.localPublicKey, isNotEmpty);
       expect(config.peerPublicKey, '');
       expect(output.toString(), contains('relay_public_key:'));
@@ -165,10 +162,6 @@ void main() {
             '7',
             '123456',
             '9',
-            'yes',
-            '80,443,8443',
-            'false',
-            'false',
             'no',
           ],
           output: output,
@@ -182,9 +175,6 @@ void main() {
         expect(config.sessionId, 'shared-session');
         expect(config.peerPublicKey, 'peer-key');
         expect(output.toString(), contains('client_public_key:'));
-        expect(config.allowPorts, [80, 443, 8443]);
-        expect(config.blockPrivateIps, isFalse);
-        expect(config.dnsOnRelay, isFalse);
         expect(config.socksHost, '127.0.0.2');
         expect(config.socksPort, 1081);
         expect(config.chunkSize, 111111);
@@ -203,24 +193,6 @@ void main() {
         expect(config.transportPreset, BtunTransportPreset.custom);
       },
     );
-
-    test('relay policy can be skipped during setup', () async {
-      final temp = await Directory.systemTemp.createTemp('btun_setup_test_');
-      addTearDown(() => temp.delete(recursive: true));
-
-      await _wizard(
-        lines: _defaultSetupLines(login: 'no'),
-        output: StringBuffer(),
-        profile: temp.path,
-      ).run();
-
-      final config = await BtunConfig.load(
-        BtunConfig.defaultConfigPath(temp.path),
-      );
-      expect(config.allowPorts, [80, 443]);
-      expect(config.blockPrivateIps, isTrue);
-      expect(config.dnsOnRelay, isTrue);
-    });
 
     test('role argument overrides existing client config', () async {
       final temp = await Directory.systemTemp.createTemp('btun_setup_test_');

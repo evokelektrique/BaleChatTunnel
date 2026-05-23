@@ -4,17 +4,11 @@ import 'dart:io';
 import 'chunk_transport.dart';
 import 'logger.dart';
 import 'protocol.dart';
-import 'relay_policy.dart';
 
 class TcpRelay {
-  TcpRelay({
-    required this.chunkTransport,
-    required this.policy,
-    required this.logger,
-  });
+  TcpRelay({required this.chunkTransport, required this.logger});
 
   final ChunkTransport chunkTransport;
-  final RelayPolicy policy;
   final Logger logger;
   final _streams = <int, _RelayStream>{};
   final _closedStreams = <int>{};
@@ -62,9 +56,8 @@ class TcpRelay {
     try {
       final stream = _streams.putIfAbsent(frame.streamId, _RelayStream.new);
       stream.state = _RelayStreamState.opening;
-      final addresses = await policy.resolveAllowed(host, port);
       final socket = await Socket.connect(
-        addresses.first,
+        host,
         port,
         timeout: const Duration(seconds: 15),
       );

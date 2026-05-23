@@ -2,9 +2,9 @@
 set -euo pipefail
 
 repo="evokelektrique/BaleChatTunnel"
-binary_name="btun"
 asset_name="bale-chat-tunnel-cli-linux-x64"
 legacy_asset_name="btun-linux-x64"
+binary_name="$asset_name"
 
 install_dir="${BTUN_INSTALL_DIR:-$HOME/.local/bin}"
 profile="${BTUN_PROFILE:-$HOME/.btun-relay}"

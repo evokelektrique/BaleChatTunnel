@@ -250,43 +250,6 @@ class BtunSetupWizard {
       );
     }
 
-    var allowPorts = defaults.allowPorts;
-    var blockPrivateIps = defaults.blockPrivateIps;
-    var dnsOnRelay = defaults.dnsOnRelay;
-    writeln('');
-    final configureRelayPolicy = await promptBool(
-      'Configure relay policy',
-      defaultValue: false,
-      help:
-          'Optional advanced relay settings. Press Enter to keep the defaults '
-          'unless you need to restrict destination ports or DNS behavior.',
-    );
-    if (configureRelayPolicy) {
-      writeln('');
-      writeln('Relay policy');
-      allowPorts = await promptPortList(
-        'Allowed relay ports',
-        defaultValue: defaults.allowPorts,
-        help:
-            'Comma-separated destination ports the relay may connect to, such '
-            'as 80,443,8443. Used only when running relay.',
-      );
-      blockPrivateIps = await promptBool(
-        'Block private IPs',
-        defaultValue: defaults.blockPrivateIps,
-        help:
-            'When true, relay refuses private, loopback, link-local, and local '
-            'addresses after DNS resolution.',
-      );
-      dnsOnRelay = await promptBool(
-        'Resolve DNS on relay',
-        defaultValue: defaults.dnsOnRelay,
-        help:
-            'When true, hostnames are resolved by the relay side. Used only '
-            'when running relay.',
-      );
-    }
-
     final config = defaults.copyWith(
       role: role,
       database: database,
@@ -310,9 +273,6 @@ class BtunSetupWizard {
       maxRetryChunks: maxRetryChunks,
       maxRetryBytes: maxRetryBytes,
       maxStreams: maxStreams,
-      allowPorts: allowPorts,
-      blockPrivateIps: blockPrivateIps,
-      dnsOnRelay: dnsOnRelay,
     );
     var nextConfig = config;
     await nextConfig.save(configPath);
