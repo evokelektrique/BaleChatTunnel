@@ -19,6 +19,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     required this.uploadRateLimitPerMinute,
     required this.logger,
     this.maxConcurrentUploads = 1,
+    this.accountUserId,
   });
 
   final BaleClient client;
@@ -31,6 +32,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   final int uploadRateLimitPerMinute;
   final Logger logger;
   final int maxConcurrentUploads;
+  final int? accountUserId;
 
   final StreamController<IncomingTunnelFile> _incoming =
       StreamController<IncomingTunnelFile>.broadcast();
@@ -177,7 +179,9 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     if (document == null) return;
     if (!isBtunFileName(document.name)) return;
     if (!_nameMatches(document.name)) return;
-    final messageId = message.messageId.toString();
+    final messageId = accountUserId == null
+        ? message.messageId.toString()
+        : '$accountUserId:${message.messageId}';
     if (stateDb.hasProcessedMessage(messageId)) return;
     final retryAfter = _downloadRetryAfter[messageId];
     if (retryAfter != null && DateTime.now().isBefore(retryAfter)) return;
@@ -394,6 +398,83 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     _pollTimer?.cancel();
     _uploadRateRecoveryTimer?.cancel();
     await _updates?.cancel();
+    await _incoming.close();
+  }
+}
+
+class LoadBalancedSavedMessagesTransport implements TunnelTransport {
+  LoadBalancedSavedMessagesTransport({
+    required List<TunnelTransport> transports,
+    required this.logger,
+  }) : _transports = transports;
+
+  final List<TunnelTransport> _transports;
+  final Logger logger;
+  final StreamController<IncomingTunnelFile> _incoming =
+      StreamController<IncomingTunnelFile>.broadcast();
+  final _subscriptions = <StreamSubscription<IncomingTunnelFile>>[];
+  var _nextUploadIndex = 0;
+  var _started = false;
+
+  @override
+  bool get isBackingOff =>
+      _transports.isNotEmpty &&
+      _transports.every((transport) => transport.isBackingOff);
+
+  @override
+  Future<void> start() async {
+    if (_transports.isEmpty) {
+      throw Exception('no enabled Bale accounts; add an account first');
+    }
+    if (_started) return;
+    _started = true;
+    for (final transport in _transports) {
+      _subscriptions.add(
+        transport.incomingFiles().listen(
+          _incoming.add,
+          onError: _incoming.addError,
+        ),
+      );
+      await transport.start();
+    }
+  }
+
+  @override
+  Stream<IncomingTunnelFile> incomingFiles() => _incoming.stream;
+
+  @override
+  Future<void> sendFile(OutgoingTunnelFile file) async {
+    if (_transports.isEmpty) {
+      throw Exception('no enabled Bale accounts; add an account first');
+    }
+    Object? lastError;
+    for (var attempt = 0; attempt < _transports.length; attempt++) {
+      final index = (_nextUploadIndex + attempt) % _transports.length;
+      final transport = _transports[index];
+      if (transport.isBackingOff && attempt < _transports.length - 1) {
+        continue;
+      }
+      try {
+        await transport.sendFile(file);
+        _nextUploadIndex = (index + 1) % _transports.length;
+        return;
+      } on Object catch (error) {
+        lastError = error;
+        logger.warn('account upload failed; trying next account: $error');
+      }
+    }
+    if (lastError != null) throw lastError;
+  }
+
+  @override
+  Future<void> close() async {
+    for (final subscription in _subscriptions) {
+      await subscription.cancel();
+    }
+    _subscriptions.clear();
+    for (final transport in _transports) {
+      await transport.close();
+    }
     await _incoming.close();
   }
 }

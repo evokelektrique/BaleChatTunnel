@@ -9,7 +9,7 @@ BTUN_WINDOWS_X64 ?= $(BTUN_CLI_DIR)/btun-windows-x64.exe
 .PHONY: help pub-get analyze test test-root analyze-client test-client format-client \
 	bale-login bale-status bale-peers bale-listen bale-logout \
 	btun-login btun-init btun-status btun-client btun-relay btun-http-test \
-	btun-upload-test build-linux-x64 build-windows-x64 build-android-apk \
+	build-linux-x64 build-windows-x64 build-android-apk \
 	build-cli-linux-x64 build-cli-windows-x64 \
 	check-cli-linux-x64 check-cli-windows-x64
 
@@ -43,7 +43,6 @@ help:
 	@printf '%s\n' '  make btun-relay       Run Saved Messages relay.'
 	@printf '%s\n' '  make btun-client      Run SOCKS5 client on 127.0.0.1:1080.'
 	@printf '%s\n' '  make btun-http-test   Send hardcoded HTTP request through tunnel.'
-	@printf '%s\n' '  make btun-upload-test Verify Bale Saved Messages file upload/download.'
 	@printf '%s\n' '  make check-cli-linux-x64 Run the compiled Linux CLI help command.'
 	@printf '%s\n' '  make check-cli-windows-x64 Run the compiled Windows CLI help command.'
 	@printf '%s\n' ''
@@ -112,9 +111,6 @@ btun-relay:
 
 btun-http-test:
 	dart run bale_chat_tunnel:btun http-test
-
-btun-upload-test:
-	dart run bale_chat_tunnel:btun upload-test
 
 build-linux-x64:
 	flutter config --enable-linux-desktop

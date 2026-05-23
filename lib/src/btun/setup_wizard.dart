@@ -3,8 +3,7 @@ import 'dart:io';
 import 'config.dart';
 import 'crypto.dart';
 
-typedef LoginRunner =
-    Future<bool> Function(String profileDir, String sessionFile);
+typedef LoginRunner = Future<BtunAccountConfig?> Function(String profileDir);
 typedef LineReader = String? Function();
 typedef TextWriter = void Function(Object? object);
 typedef TextAppender = void Function(Object? object);
@@ -68,8 +67,6 @@ class BtunSetupWizard {
     if (profileFromArgs != null) writeln('Using profile $profile.');
     final configPath =
         configPathFromArgs ?? BtunConfig.defaultConfigPath(profile);
-    final sessionFile =
-        sessionPathFromArgs ?? BtunConfig.defaultSessionPath(profile);
     final database = BtunConfig.defaultDatabasePath(profile);
     final existing = await BtunConfig.tryLoad(configPath);
 
@@ -292,7 +289,6 @@ class BtunSetupWizard {
 
     final config = defaults.copyWith(
       role: role,
-      sessionFile: sessionFile,
       database: database,
       sessionId: sessionId,
       localPublicKey: localPublicKey,
@@ -318,25 +314,32 @@ class BtunSetupWizard {
       blockPrivateIps: blockPrivateIps,
       dnsOnRelay: dnsOnRelay,
     );
-    await config.save(configPath);
+    var nextConfig = config;
+    await nextConfig.save(configPath);
     writeln('');
     writeln('Wrote $configPath');
 
-    final hasSession = await File(sessionFile).exists();
-    var loggedIn = hasSession;
-    if (!hasSession) {
+    var loggedIn = nextConfig.enabledAccounts.isNotEmpty;
+    if (!loggedIn) {
       final runLogin = await promptBool(
-        'No Bale session found. Run login now',
+        'No Bale account found. Add account now',
         defaultValue: true,
         help:
-            'Login stores Bale credentials in the profile session file. Setup '
-            'can finish without login.',
+            'Login stores Bale credentials under the profile accounts '
+            'directory. Setup can finish without an account.',
       );
-      if (runLogin) loggedIn = await loginRunner(profile, sessionFile);
+      if (runLogin) {
+        final account = await loginRunner(profile);
+        if (account != null) {
+          nextConfig = nextConfig.upsertAccount(account);
+          await nextConfig.save(configPath);
+          loggedIn = true;
+        }
+      }
     }
 
-    printNextSteps(config, profile, configPath, loggedIn: loggedIn);
-    return config;
+    printNextSteps(nextConfig, profile, configPath, loggedIn: loggedIn);
+    return nextConfig;
   }
 
   void printNextSteps(

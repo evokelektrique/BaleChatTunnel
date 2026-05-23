@@ -70,7 +70,7 @@ const btunTransportPresetSpecs = {
     maxInFlight: 2,
     pollInterval: Duration(milliseconds: 3000),
     uploadMinInterval: Duration.zero,
-    uploadRateLimitPerMinute: 40,
+    uploadRateLimitPerMinute: 45,
     ackFlushInterval: Duration(milliseconds: 1000),
     flushDelay: Duration(milliseconds: 100),
     bulkFlushDelay: Duration(milliseconds: 250),
@@ -95,7 +95,7 @@ const btunTransportPresetSpecs = {
 class BtunConfig {
   const BtunConfig({
     required this.role,
-    required this.sessionFile,
+    required this.accounts,
     required this.database,
     required this.sessionId,
     required this.localPublicKey,
@@ -123,7 +123,7 @@ class BtunConfig {
   });
 
   final BtunRole role;
-  final String sessionFile;
+  final List<BtunAccountConfig> accounts;
   final String database;
   final String sessionId;
   final String localPublicKey;
@@ -152,8 +152,9 @@ class BtunConfig {
   static String defaultProfileDir() => '.btun';
   static String defaultConfigPath(String profileDir) =>
       '$profileDir/config.json';
-  static String defaultSessionPath(String profileDir) =>
-      '$profileDir/session.json';
+  static String defaultAccountsDir(String profileDir) => '$profileDir/accounts';
+  static String accountSessionPath(String profileDir, int userId) =>
+      '${defaultAccountsDir(profileDir)}/$userId.session.json';
   static String defaultDatabasePath(String profileDir) =>
       '$profileDir/state.json';
 
@@ -161,7 +162,7 @@ class BtunConfig {
     final preset = btunTransportPresetSpecs[BtunTransportPreset.stable]!;
     return BtunConfig(
       role: BtunRole.client,
-      sessionFile: defaultSessionPath(profileDir),
+      accounts: const [],
       database: defaultDatabasePath(profileDir),
       sessionId: randomSessionId(),
       localPublicKey: '',
@@ -232,7 +233,10 @@ class BtunConfig {
     final configuredMaxRetryBytes = json['max_retry_bytes'] as int?;
     final config = BtunConfig(
       role: _role(json['role'] as String? ?? 'client'),
-      sessionFile: json['session_file'] as String,
+      accounts: [
+        for (final account in json['accounts'] as List? ?? const [])
+          BtunAccountConfig.fromJson(account as Map<String, Object?>),
+      ],
       database: json['database'] as String,
       sessionId: json['session_id'] as String,
       localPublicKey: json['local_public_key'] as String? ?? '',
@@ -259,7 +263,7 @@ class BtunConfig {
             stable.uploadMinInterval.inMilliseconds,
       ),
       uploadRateLimitPerMinute:
-          configuredUploadRateLimit == null || configuredUploadRateLimit == 45
+          configuredUploadRateLimit == null || configuredUploadRateLimit == 40
           ? stable.uploadRateLimitPerMinute
           : configuredUploadRateLimit,
       ackFlushInterval: Duration(
@@ -302,7 +306,7 @@ class BtunConfig {
 
   Map<String, Object?> toJson() => {
     'role': role.name,
-    'session_file': sessionFile,
+    'accounts': [for (final account in accounts) account.toJson()],
     'database': database,
     'session_id': sessionId,
     'local_public_key': localPublicKey,
@@ -333,7 +337,7 @@ class BtunConfig {
 
   BtunConfig copyWith({
     BtunRole? role,
-    String? sessionFile,
+    List<BtunAccountConfig>? accounts,
     String? database,
     String? sessionId,
     String? localPublicKey,
@@ -360,7 +364,7 @@ class BtunConfig {
     bool? dnsOnRelay,
   }) => BtunConfig(
     role: role ?? this.role,
-    sessionFile: sessionFile ?? this.sessionFile,
+    accounts: accounts ?? this.accounts,
     database: database ?? this.database,
     sessionId: sessionId ?? this.sessionId,
     localPublicKey: localPublicKey ?? this.localPublicKey,
@@ -386,6 +390,40 @@ class BtunConfig {
     allowPorts: allowPorts ?? this.allowPorts,
     blockPrivateIps: blockPrivateIps ?? this.blockPrivateIps,
     dnsOnRelay: dnsOnRelay ?? this.dnsOnRelay,
+  );
+
+  List<BtunAccountConfig> get enabledAccounts =>
+      accounts.where((account) => account.enabled).toList(growable: false);
+
+  BtunConfig upsertAccount(BtunAccountConfig account) {
+    final next = <BtunAccountConfig>[];
+    var replaced = false;
+    for (final existing in accounts) {
+      if (existing.userId == account.userId) {
+        next.add(account);
+        replaced = true;
+      } else {
+        next.add(existing);
+      }
+    }
+    if (!replaced) {
+      next.add(account);
+    }
+    return copyWith(accounts: next);
+  }
+
+  BtunConfig removeAccount(int userId) {
+    final next = accounts
+        .where((account) => account.userId != userId)
+        .toList(growable: false);
+    return copyWith(accounts: next);
+  }
+
+  BtunConfig setAccountEnabled(int userId, bool enabled) => copyWith(
+    accounts: [
+      for (final account in accounts)
+        account.userId == userId ? account.copyWith(enabled: enabled) : account,
+    ],
   );
 
   static BtunRole _role(String value) => switch (value) {
@@ -424,4 +462,39 @@ class BtunConfig {
       transportPreset: preset,
     );
   }
+}
+
+class BtunAccountConfig {
+  const BtunAccountConfig({
+    required this.userId,
+    required this.sessionFile,
+    this.enabled = true,
+  });
+
+  final int userId;
+  final String sessionFile;
+  final bool enabled;
+
+  static BtunAccountConfig fromJson(Map<String, Object?> json) =>
+      BtunAccountConfig(
+        userId: json['user_id'] as int,
+        sessionFile: json['session_file'] as String,
+        enabled: json['enabled'] as bool? ?? true,
+      );
+
+  Map<String, Object?> toJson() => {
+    'user_id': userId,
+    'session_file': sessionFile,
+    'enabled': enabled,
+  };
+
+  BtunAccountConfig copyWith({
+    int? userId,
+    String? sessionFile,
+    bool? enabled,
+  }) => BtunAccountConfig(
+    userId: userId ?? this.userId,
+    sessionFile: sessionFile ?? this.sessionFile,
+    enabled: enabled ?? this.enabled,
+  );
 }

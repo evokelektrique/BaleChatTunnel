@@ -902,7 +902,7 @@ void main() {
     expect(config.maxInFlight, 2);
     expect(config.pollInterval, const Duration(milliseconds: 3000));
     expect(config.uploadMinInterval, Duration.zero);
-    expect(config.uploadRateLimitPerMinute, 40);
+    expect(config.uploadRateLimitPerMinute, 45);
     expect(config.ackFlushInterval, const Duration(milliseconds: 1000));
     expect(config.flushDelay, const Duration(milliseconds: 100));
     expect(config.bulkFlushDelay, const Duration(milliseconds: 250));
@@ -911,7 +911,7 @@ void main() {
     expect(config.maxRetryBytes, 64 * 1024 * 1024);
   });
 
-  test('config migrates old 45 upload rate limit to stable budget', () {
+  test('config migrates old 40 upload rate limit to stable budget', () {
     final config = BtunConfig.fromJson({
       'role': 'client',
       'session_file': 'session.json',
@@ -919,10 +919,10 @@ void main() {
       'session_id': 'testsession',
       'local_public_key': '',
       'local_private_key': '',
-      'upload_rate_limit_per_minute': 45,
+      'upload_rate_limit_per_minute': 40,
     });
 
-    expect(config.uploadRateLimitPerMinute, 40);
+    expect(config.uploadRateLimitPerMinute, 45);
   });
 
   test('config defaults use responsive stable uploads', () {
@@ -933,7 +933,7 @@ void main() {
     expect(config.maxInFlight, 2);
     expect(config.pollInterval, const Duration(milliseconds: 3000));
     expect(config.uploadMinInterval, Duration.zero);
-    expect(config.uploadRateLimitPerMinute, 40);
+    expect(config.uploadRateLimitPerMinute, 45);
     expect(config.ackFlushInterval, const Duration(milliseconds: 1000));
     expect(config.flushDelay, const Duration(milliseconds: 100));
     expect(config.bulkFlushDelay, const Duration(milliseconds: 250));
@@ -964,7 +964,7 @@ void main() {
     expect(stable.maxInFlight, 2);
     expect(stable.pollInterval, const Duration(milliseconds: 3000));
     expect(stable.uploadMinInterval, Duration.zero);
-    expect(stable.uploadRateLimitPerMinute, 40);
+    expect(stable.uploadRateLimitPerMinute, 45);
     expect(stable.ackFlushInterval, const Duration(milliseconds: 1000));
     expect(stable.flushDelay, const Duration(milliseconds: 100));
     expect(stable.bulkFlushDelay, const Duration(milliseconds: 250));

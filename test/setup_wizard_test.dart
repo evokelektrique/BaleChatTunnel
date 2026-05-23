@@ -263,7 +263,7 @@ BtunSetupWizard _wizard({
     configPathFromArgs: null,
     sessionPathFromArgs: null,
     roleFromArgs: role,
-    loginRunner: (_, _) async => true,
+    loginRunner: (_) async => null,
   );
 }
 

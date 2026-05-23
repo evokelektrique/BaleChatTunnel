@@ -59,7 +59,7 @@ make build-cli-linux-x64
 Installer overrides:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_VERSION=v0.1.1 bash
+curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_VERSION=v0.2.0 bash
 curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_INSTALL_DIR=/usr/local/bin BTUN_PROFILE=/etc/btun/relay bash
 curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_RUN_SETUP=0 bash
 curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_INSTALL_SERVICE=0 bash
@@ -82,7 +82,7 @@ Uninstall relay service and default installer files:
 systemctl --user disable --now btun-relay
 rm -f ~/.config/systemd/user/btun-relay.service
 systemctl --user daemon-reload
-rm -f ~/.local/bin/btun
+rm -f ~/.local/bin/<installed-cli-binary>
 rm -rf ~/.btun-relay
 ```
 
@@ -105,7 +105,7 @@ Manual CLI setup:
 
 Use the same Bale account on both machines.
 
-The examples use the Linux CLI release binary:
+These examples use the Linux x64 CLI release binary name:
 `./bale-chat-tunnel-cli-linux-x64`.
 
 On the relay machine:
@@ -151,17 +151,13 @@ Common CLI commands:
 ./bale-chat-tunnel-cli-linux-x64 status
 ./bale-chat-tunnel-cli-linux-x64 relay
 ./bale-chat-tunnel-cli-linux-x64 client --socks-port 1080
-./bale-chat-tunnel-cli-linux-x64 upload-test
 ```
 
-Local source builds use a different output path:
+Local source builds use their configured output path; replace the binary name in
+the examples with the path produced by your build.
 
-```bash
-build/cli/btun-linux-x64 setup --profile .btun-client
-```
-
-The desktop app provides the same setup flow through Settings, Key Exchange, and
-Home connection controls.
+The desktop app provides the same setup flow through Settings and Home
+connection controls.
 
 ## Configuration
 

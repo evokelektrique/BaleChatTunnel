@@ -5,134 +5,9 @@ import 'dart:io';
 import 'package:bale_chat_tunnel/btun.dart';
 import 'package:bale_client/bale_client.dart';
 
-const _uploadTestExtensions = [
-  'txt',
-  'csv',
-  'log',
-  'md',
-  'json',
-  'xml',
-  'yaml',
-  'yml',
-  'html',
-  'css',
-  'js',
-  'ts',
-  'dart',
-  'py',
-  'java',
-  'kt',
-  'swift',
-  'c',
-  'cpp',
-  'h',
-  'sh',
-  'sql',
-  'pdf',
-  'jpg',
-  'webp',
-  'bmp',
-  'svg',
-  'gz',
-  'tar',
-  'rar',
-  '7z',
-  'mp3',
-  'wav',
-  'ogg',
-  'mp4',
-  'mov',
-  'webm',
-  'doc',
-  'docx',
-  'xls',
-  'xlsx',
-  'ppt',
-  'pptx',
-  'apk',
-  'ipa',
-  'exe',
-  'dll',
-  'so',
-  'dylib',
-  'wasm',
-  'sqlite',
-  'db',
-  'pem',
-  'crt',
-  'key',
-  'bin',
-];
-
-const _gifBytes = [0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00];
-const _jpegBytes = [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0xff, 0xd9];
-const _pngBytes = [
-  0x89,
-  0x50,
-  0x4e,
-  0x47,
-  0x0d,
-  0x0a,
-  0x1a,
-  0x0a,
-  0x00,
-  0x00,
-  0x00,
-  0x0d,
-];
-const _zipBytes = [
-  0x50,
-  0x4b,
-  0x05,
-  0x06,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-  0x00,
-];
-
 Future<void> main(List<String> args) async {
   final cli = BtunCli(args);
   await cli.run();
-}
-
-class _UploadTestCase {
-  const _UploadTestCase(this.name, this.bytes, this.mimeType);
-
-  final String name;
-  final List<int> bytes;
-  final String mimeType;
-
-  String get label {
-    final dot = name.lastIndexOf('.');
-    return dot == -1 ? 'no-extension' : name.substring(dot + 1);
-  }
-}
-
-class _UploadTestResult {
-  const _UploadTestResult({
-    required this.uploadElapsed,
-    required this.downloadElapsed,
-    required this.attempts,
-  });
-
-  final Duration uploadElapsed;
-  final Duration downloadElapsed;
-  final int attempts;
 }
 
 class BtunCli {
@@ -145,7 +20,9 @@ class BtunCli {
     try {
       switch (command) {
         case 'login':
-          await _login();
+          await _accountAdd();
+        case 'account':
+          await _account();
         case 'setup':
           await _setup();
         case 'init':
@@ -158,8 +35,6 @@ class BtunCli {
           await _runRelay();
         case 'http-test':
           await _httpTest();
-        case 'upload-test':
-          await _uploadTest();
         case 'help':
         case '--help':
         case '-h':
@@ -176,25 +51,17 @@ class BtunCli {
     }
   }
 
-  Future<void> _login() async {
-    final profile = _profileDir();
-    final sessionFile =
-        _value('session') ?? BtunConfig.defaultSessionPath(profile);
-    await _loginWithSessionFile(sessionFile);
-  }
-
-  Future<bool> _loginForSetup(String profile, String sessionFile) async {
-    stdout.writeln('Using profile $profile for login.');
+  Future<BtunAccountConfig?> _loginForSetup(String profile) async {
+    stdout.writeln('Using profile $profile for account login.');
     try {
-      await _loginWithSessionFile(sessionFile);
-      return true;
+      return await _loginAndRegisterAccount(profile);
     } on Object catch (error) {
       stdout.writeln('Login skipped or failed: $error');
-      return false;
+      return null;
     }
   }
 
-  Future<void> _loginWithSessionFile(String sessionFile) async {
+  Future<BaleSession> _loginWithSessionFile(String sessionFile) async {
     final client = BaleClient(
       credentialsStore: FileBaleCredentialsStore(sessionFile),
     );
@@ -237,10 +104,14 @@ class BtunCli {
           rethrow;
         }
       }
-      stdout.writeln(
-        'Logged in as userId=${client.session?.userId ?? 'unknown'}',
-      );
+      final session = client.session;
+      final userId = session?.userId;
+      if (session == null || userId == null) {
+        throw Exception('login completed without a Bale user id');
+      }
+      stdout.writeln('Logged in as userId=$userId');
       stdout.writeln('Session stored at $sessionFile');
+      return session;
     } finally {
       await client.close();
     }
@@ -263,8 +134,6 @@ class BtunCli {
     final profile = _profileDir();
     final configPath =
         _value('config') ?? BtunConfig.defaultConfigPath(profile);
-    final sessionFile =
-        _value('session') ?? BtunConfig.defaultSessionPath(profile);
     final existing = await BtunConfig.tryLoad(configPath);
     final sessionId =
         _value('session-id') ??
@@ -284,7 +153,6 @@ class BtunCli {
         existing?.peerPublicKey;
     var config = (existing ?? BtunConfig.defaults(profileDir: profile))
         .copyWith(
-          sessionFile: sessionFile,
           sessionId: sessionId,
           localPublicKey: localKeys.publicKey,
           localPrivateKey: localKeys.privateKey,
@@ -309,7 +177,6 @@ class BtunCli {
   Future<void> _status() async {
     final config = await _loadConfig();
     stdout.writeln('profile: ${_profileDir()}');
-    stdout.writeln('session_file: ${config.sessionFile}');
     stdout.writeln('session_id: ${config.sessionId}');
     stdout.writeln('${_localKeyLabel(config.role)}: ${config.localPublicKey}');
     stdout.writeln(
@@ -336,6 +203,114 @@ class BtunCli {
     stdout.writeln('bulk_chunk_size: ${config.bulkChunkSize}');
     stdout.writeln('max_retry_chunks: ${config.maxRetryChunks}');
     stdout.writeln('max_retry_bytes: ${config.maxRetryBytes}');
+    stdout.writeln('accounts: ${config.accounts.length}');
+    stdout.writeln('enabled_accounts: ${config.enabledAccounts.length}');
+    for (final account in config.accounts) {
+      stdout.writeln(
+        'account ${account.userId}: enabled=${account.enabled} '
+        'session=${account.sessionFile}',
+      );
+    }
+  }
+
+  Future<void> _account() async {
+    final subcommand = args.length < 2 ? 'help' : args[1];
+    switch (subcommand) {
+      case 'add':
+        await _accountAdd();
+      case 'list':
+        await _accountList();
+      case 'remove':
+        await _accountRemove();
+      case 'enable':
+        await _accountEnable(true);
+      case 'disable':
+        await _accountEnable(false);
+      case 'help':
+      case '--help':
+      case '-h':
+        _printAccountHelp();
+      default:
+        throw Exception('unknown account command: $subcommand');
+    }
+  }
+
+  Future<void> _accountAdd() async {
+    final account = await _loginAndRegisterAccount(_profileDir());
+    stdout.writeln('Added account ${account.userId}');
+  }
+
+  Future<BtunAccountConfig> _loginAndRegisterAccount(String profile) async {
+    final configPath =
+        _value('config') ?? BtunConfig.defaultConfigPath(profile);
+    var config =
+        await BtunConfig.tryLoad(configPath) ??
+        BtunConfig.defaults(profileDir: profile);
+    final pendingPath =
+        '${BtunConfig.defaultAccountsDir(profile)}/pending.session.json';
+    final session = await _loginWithSessionFile(pendingPath);
+    final userId = session.userId;
+    if (userId == null) throw Exception('login completed without a user id');
+    final sessionPath = BtunConfig.accountSessionPath(profile, userId);
+    final pendingFile = File(pendingPath);
+    final sessionFile = File(sessionPath);
+    await sessionFile.parent.create(recursive: true);
+    if (await sessionFile.exists()) await sessionFile.delete();
+    await pendingFile.rename(sessionPath);
+    final account = BtunAccountConfig(
+      userId: userId,
+      sessionFile: sessionPath,
+      enabled: true,
+    );
+    config = config.upsertAccount(account);
+    await config.save(configPath);
+    return account;
+  }
+
+  Future<void> _accountList() async {
+    final config = await _loadConfig();
+    if (config.accounts.isEmpty) {
+      stdout.writeln('No accounts configured.');
+      return;
+    }
+    for (final account in config.accounts) {
+      stdout.writeln(
+        '${account.userId}\t'
+        'enabled=${account.enabled}\t'
+        '${account.sessionFile}',
+      );
+    }
+  }
+
+  Future<void> _accountRemove() async {
+    final userId = _accountUserIdArg();
+    final matches = (await _loadConfig()).accounts.where(
+      (account) => account.userId == userId,
+    );
+    final account = matches.isEmpty ? null : matches.first;
+    if (account == null) throw Exception('unknown account: $userId');
+    await _updateConfig((config) => config.removeAccount(userId));
+    final file = File(account.sessionFile);
+    if (await file.exists()) await file.delete();
+    stdout.writeln('Removed account $userId');
+  }
+
+  Future<void> _accountEnable(bool enabled) async {
+    final userId = _accountUserIdArg();
+    await _updateConfig((config) => config.setAccountEnabled(userId, enabled));
+    stdout.writeln('${enabled ? 'Enabled' : 'Disabled'} account $userId');
+  }
+
+  int _accountUserIdArg() {
+    if (args.length < 3) throw Exception('account user id is required');
+    return int.parse(args[2]);
+  }
+
+  Future<void> _updateConfig(BtunConfig Function(BtunConfig) update) async {
+    final profile = _profileDir();
+    final configPath =
+        _value('config') ?? BtunConfig.defaultConfigPath(profile);
+    await update(await BtunConfig.load(configPath)).save(configPath);
   }
 
   Future<void> _runClient() async {
@@ -361,26 +336,24 @@ class BtunCli {
     );
     await server.start();
     stdout.writeln('SOCKS5 listening on ${server.host}:${server.port}');
-    final stateSub = runtime.bale.updates.listen((update) {
-      if (update case BaleConnectionStateUpdate(:final state)) {
-        stdout.writeln('Bale connection: ${state.name}');
-      }
-    });
+    final stateSubs = runtime.bales.map((bale) {
+      final userId = bale.session?.userId ?? 'unknown';
+      return bale.updates.listen((update) {
+        if (update case BaleConnectionStateUpdate(:final state)) {
+          stdout.writeln('Bale account $userId connection: ${state.name}');
+        }
+      });
+    }).toList();
     try {
       stdout.writeln('Connecting to Bale...');
-      await runtime.bale.connect().timeout(
-        const Duration(seconds: 20),
-        onTimeout: () {
-          throw Exception(
-            'Timed out connecting to Bale. Check network access to Bale.',
-          );
-        },
-      );
+      await runtime.connectAll();
       await runtime.start();
       stdout.writeln('Client ready for session ${config.sessionId}');
       await _waitForSignal();
     } finally {
-      await stateSub.cancel();
+      for (final sub in stateSubs) {
+        await sub.cancel();
+      }
       await server.close();
       await runtime.close();
     }
@@ -399,21 +372,17 @@ class BtunCli {
       policy: RelayPolicy.fromConfig(config),
       logger: Logger(),
     );
-    final stateSub = runtime.bale.updates.listen((update) {
-      if (update case BaleConnectionStateUpdate(:final state)) {
-        stdout.writeln('Bale connection: ${state.name}');
-      }
-    });
+    final stateSubs = runtime.bales.map((bale) {
+      final userId = bale.session?.userId ?? 'unknown';
+      return bale.updates.listen((update) {
+        if (update case BaleConnectionStateUpdate(:final state)) {
+          stdout.writeln('Bale account $userId connection: ${state.name}');
+        }
+      });
+    }).toList();
     try {
       stdout.writeln('Connecting to Bale...');
-      await runtime.bale.connect().timeout(
-        const Duration(seconds: 20),
-        onTimeout: () {
-          throw Exception(
-            'Timed out connecting to Bale. Check network access to Bale.',
-          );
-        },
-      );
+      await runtime.connectAll();
       await runtime.start();
       await relay.start();
       stdout.writeln(
@@ -421,7 +390,9 @@ class BtunCli {
       );
       await _waitForSignal();
     } finally {
-      await stateSub.cancel();
+      for (final sub in stateSubs) {
+        await sub.cancel();
+      }
       await relay.close();
       await runtime.close();
     }
@@ -451,210 +422,6 @@ class BtunCli {
     await runtime.close();
   }
 
-  Future<void> _uploadTest() async {
-    final config = await _loadConfig();
-    final bale = BaleClient(
-      credentialsStore: FileBaleCredentialsStore(config.sessionFile),
-    );
-    try {
-      stdout.writeln('Upload test: connecting');
-      final restored = await bale.restoreSession(connect: true);
-      if (restored == null) {
-        throw Exception('no Bale session; run btun login first');
-      }
-      final userId = bale.session?.userId;
-      if (userId == null) throw Exception('Bale session has no userId');
-      final startedAt = DateTime.now().millisecondsSinceEpoch;
-      final cases = _uploadTestCases(startedAt);
-      final delay = Duration(
-        milliseconds: int.tryParse(_value('upload-delay-ms') ?? '') ?? 1000,
-      );
-      final retries = int.tryParse(_value('retries') ?? '') ?? 1;
-      final failures = <String>[];
-
-      for (var i = 0; i < cases.length; i++) {
-        if (i > 0 && delay > Duration.zero) await Future<void>.delayed(delay);
-        final testCase = cases[i];
-        final prefix = '[${i + 1}/${cases.length}] ${testCase.name}';
-        try {
-          final result = await _runUploadTestCase(
-            bale,
-            BalePeer.private(userId),
-            testCase,
-            retries: retries,
-          );
-          stdout.writeln(
-            '$prefix ok (${testCase.bytes.length} bytes) '
-            'upload=${result.uploadElapsed.inMilliseconds}ms '
-            'download=${result.downloadElapsed.inMilliseconds}ms '
-            'attempts=${result.attempts}',
-          );
-        } catch (error) {
-          failures.add('${testCase.label}: $error');
-          stdout.writeln('$prefix failed ${_formatUploadTestError(error)}');
-        }
-      }
-      final passed = cases.length - failures.length;
-      if (failures.isEmpty) {
-        stdout.writeln('Upload test passed: $passed/${cases.length}');
-      } else {
-        stdout.writeln(
-          'Upload test finished: $passed/${cases.length} passed; '
-          'failed: ${failures.join(' | ')}',
-        );
-      }
-    } finally {
-      await bale.close();
-    }
-  }
-
-  List<_UploadTestCase> _uploadTestCases(int runId) {
-    final commonPayload = utf8.encode('btun upload test $runId');
-    final cases = <_UploadTestCase>[
-      _UploadTestCase('btun_upload_test_$runId.png', _pngBytes, 'image/png'),
-      _UploadTestCase('btun_upload_test_$runId.jpeg', _jpegBytes, 'image/jpeg'),
-      _UploadTestCase(
-        'btun_upload_test_$runId.zip',
-        _zipBytes,
-        'application/zip',
-      ),
-      _UploadTestCase('btun_upload_test_$runId.gif', _gifBytes, 'image/gif'),
-      _UploadTestCase(
-        'btun_upload_test_$runId',
-        commonPayload,
-        'application/octet-stream',
-      ),
-    ];
-
-    for (final extension in _uploadTestExtensions) {
-      cases.add(
-        _UploadTestCase(
-          'btun_upload_test_$runId.$extension',
-          utf8.encode('btun upload test $runId .$extension'),
-          _mimeTypeForExtension(extension),
-        ),
-      );
-    }
-    return cases;
-  }
-
-  Future<_UploadTestResult> _runUploadTestCase(
-    BaleClient bale,
-    BalePeer peer,
-    _UploadTestCase testCase, {
-    required int retries,
-  }) async {
-    Object? lastError;
-    final attempts = retries < 0 ? 1 : retries + 1;
-    for (var attempt = 1; attempt <= attempts; attempt++) {
-      try {
-        final uploadWatch = Stopwatch()..start();
-        final message = await bale.sendDocument(
-          peer: peer,
-          file: BaleFileInput.bytes(
-            testCase.bytes,
-            name: testCase.name,
-            mimeType: testCase.mimeType,
-          ),
-        );
-        uploadWatch.stop();
-        final document = message.document;
-        if (document == null) {
-          throw Exception('upload returned no document');
-        }
-        final downloadWatch = Stopwatch()..start();
-        final downloaded = await bale.downloadFile(
-          fileId: document.fileId,
-          accessHash: document.accessHash,
-        );
-        downloadWatch.stop();
-        if (base64Encode(downloaded) != base64Encode(testCase.bytes)) {
-          throw Exception(
-            'download mismatch: sent ${testCase.bytes.length}, '
-            'got ${downloaded.length}',
-          );
-        }
-        return _UploadTestResult(
-          uploadElapsed: uploadWatch.elapsed,
-          downloadElapsed: downloadWatch.elapsed,
-          attempts: attempt,
-        );
-      } catch (error) {
-        lastError = error;
-        if (attempt < attempts) {
-          await Future<void>.delayed(const Duration(seconds: 1));
-        }
-      }
-    }
-    Error.throwWithStackTrace(lastError!, StackTrace.current);
-  }
-
-  String _formatUploadTestError(Object error) {
-    if (error is BaleHttpException) {
-      final details = [
-        'stage=${error.stage}',
-        'status=${error.statusCode}',
-        'host=${error.host}',
-        'elapsed=${error.elapsed.inMilliseconds}ms',
-        ...error.headers.entries.map((entry) => '${entry.key}=${entry.value}'),
-      ];
-      final body = error.body.trim();
-      if (body.isNotEmpty) details.add('body=$body');
-      return details.join(' ');
-    }
-    return error.toString();
-  }
-
-  String _mimeTypeForExtension(String extension) => switch (extension) {
-    'txt' ||
-    'csv' ||
-    'log' ||
-    'md' ||
-    'json' ||
-    'xml' ||
-    'yaml' ||
-    'yml' ||
-    'html' ||
-    'css' ||
-    'js' ||
-    'ts' ||
-    'dart' ||
-    'py' ||
-    'java' ||
-    'kt' ||
-    'swift' ||
-    'c' ||
-    'cpp' ||
-    'h' ||
-    'sh' ||
-    'sql' => 'text/plain',
-    'jpg' => 'image/jpeg',
-    'webp' => 'image/webp',
-    'bmp' => 'image/bmp',
-    'svg' => 'image/svg+xml',
-    'pdf' => 'application/pdf',
-    'gz' => 'application/gzip',
-    'tar' => 'application/x-tar',
-    'rar' => 'application/vnd.rar',
-    '7z' => 'application/x-7z-compressed',
-    'mp3' => 'audio/mpeg',
-    'wav' => 'audio/wav',
-    'ogg' => 'audio/ogg',
-    'mp4' => 'video/mp4',
-    'mov' => 'video/quicktime',
-    'webm' => 'video/webm',
-    'doc' => 'application/msword',
-    'docx' =>
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'xls' => 'application/vnd.ms-excel',
-    'xlsx' =>
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'ppt' => 'application/vnd.ms-powerpoint',
-    'pptx' =>
-      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    _ => 'application/octet-stream',
-  };
-
   Future<BtunConfig> _loadConfig({BtunRole? role}) async {
     final profile = _profileDir();
     final path = _value('config') ?? BtunConfig.defaultConfigPath(profile);
@@ -675,30 +442,32 @@ class BtunCli {
         'peer_public_key is missing; exchange keys with btun init first',
       );
     }
-    final bale = BaleClient(
-      credentialsStore: FileBaleCredentialsStore(config.sessionFile),
-    );
-    final restored = await bale.restoreSession(connect: false);
-    if (restored == null) {
-      throw Exception('no Bale session; run btun login first');
-    }
+    final bales = await _restoreAccountClients(config);
+    final bale = bales.first;
     final crypto = await BtunCrypto.fromConfig(
       config,
       send: send,
       receive: receive,
     );
     final state = StateDb.open(config.database);
-    final transport = BaleSavedMessagesTransport(
-      client: bale,
-      sessionId: config.sessionId,
-      sendDirection: send,
-      receiveDirection: receive,
-      pollInterval: config.pollInterval,
-      stateDb: state,
-      uploadMinInterval: config.uploadMinInterval,
-      uploadRateLimitPerMinute: config.uploadRateLimitPerMinute,
+    final transport = LoadBalancedSavedMessagesTransport(
+      transports: [
+        for (final bale in bales)
+          BaleSavedMessagesTransport(
+            client: bale,
+            sessionId: config.sessionId,
+            sendDirection: send,
+            receiveDirection: receive,
+            pollInterval: config.pollInterval,
+            stateDb: state,
+            uploadMinInterval: config.uploadMinInterval,
+            uploadRateLimitPerMinute: config.uploadRateLimitPerMinute,
+            logger: Logger(),
+            maxConcurrentUploads: config.maxInFlight,
+            accountUserId: bale.session?.userId,
+          ),
+      ],
       logger: Logger(),
-      maxConcurrentUploads: config.maxInFlight,
     );
     final chunkTransport = ChunkTransport(
       transport: transport,
@@ -718,7 +487,28 @@ class BtunCli {
       bulkFlushDelay: config.bulkFlushDelay,
       ackDelay: config.ackFlushInterval,
     );
-    return BtunRuntime(bale, state, transport, chunkTransport);
+    return BtunRuntime(bale, bales, state, transport, chunkTransport);
+  }
+
+  Future<List<BaleClient>> _restoreAccountClients(BtunConfig config) async {
+    final bales = <BaleClient>[];
+    for (final account in config.enabledAccounts) {
+      final bale = BaleClient(
+        credentialsStore: FileBaleCredentialsStore(account.sessionFile),
+      );
+      final restored = await bale.restoreSession(connect: false);
+      if (restored == null || restored.userId == null) {
+        await bale.close();
+        continue;
+      }
+      bales.add(bale);
+    }
+    if (bales.isEmpty) {
+      throw Exception(
+        'no enabled Bale accounts with saved sessions; run btun account add',
+      );
+    }
+    return bales;
   }
 
   String _profileDir() {
@@ -796,11 +586,11 @@ Usage:
   btun login
   btun setup
   btun init [--peer-public-key <base64>]
+  btun account add|list|remove|enable|disable
   btun status
   btun relay
   btun client [--socks-port 1080]
   btun http-test
-  btun upload-test
 
 Examples:
   btun setup --profile .btun-relay
@@ -810,27 +600,58 @@ Examples:
 Options:
   --profile <dir>          Default: .btun
   --config <path>          Default: <profile>/config.json
-  --session <path>         Default: <profile>/session.json
   --role <client|relay>    Setup role override
   --session-id <id>        Override session id
   --transport-preset <p>   interactive, stable, resilient, or custom
-  --upload-delay-ms <n>    upload-test delay between files. Default: 1000
-  --retries <n>            upload-test retries per file. Default: 1
   --peer-public-key <key>  Public key from the other side
   --client-public-key <key> Alias for peer key when this machine is relay
   --relay-public-key <key> Alias for peer key when this machine is client
   --verbose                Print stack traces on errors
 ''');
   }
+
+  void _printAccountHelp() {
+    stdout.writeln('''
+Bale account commands
+
+Usage:
+  btun account add
+  btun account list
+  btun account remove <user-id>
+  btun account enable <user-id>
+  btun account disable <user-id>
+''');
+  }
 }
 
 class BtunRuntime {
-  BtunRuntime(this.bale, this.stateDb, this.transport, this.chunkTransport);
+  BtunRuntime(
+    this.bale,
+    this.bales,
+    this.stateDb,
+    this.transport,
+    this.chunkTransport,
+  );
 
   final BaleClient bale;
+  final List<BaleClient> bales;
   final StateDb stateDb;
-  final BaleSavedMessagesTransport transport;
+  final LoadBalancedSavedMessagesTransport transport;
   final ChunkTransport chunkTransport;
+
+  Future<void> connectAll() async {
+    for (final bale in bales) {
+      final userId = bale.session?.userId ?? 'unknown';
+      await bale.connect().timeout(
+        const Duration(seconds: 20),
+        onTimeout: () {
+          throw Exception(
+            'Timed out connecting Bale account $userId. Check network access to Bale.',
+          );
+        },
+      );
+    }
+  }
 
   Future<void> start() => chunkTransport.start();
 
@@ -838,6 +659,8 @@ class BtunRuntime {
     await chunkTransport.close();
     await transport.close();
     stateDb.close();
-    await bale.close();
+    for (final bale in bales) {
+      await bale.close();
+    }
   }
 }

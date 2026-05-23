@@ -10,8 +10,11 @@ import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 const appTitle = 'Bale Chat Tunnel';
-const appVersionLabel = '0.1.1';
+const appVersionLabel = '0.2.0';
 const appRepositoryUrl = 'https://github.com/evokelektrique/BaleChatTunnel';
+const settingsControlShape = RoundedRectangleBorder(
+  borderRadius: BorderRadius.all(Radius.circular(8)),
+);
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -62,19 +65,19 @@ class BtunApp extends StatelessWidget {
       scaffoldBackgroundColor: scheme.surface,
       cardTheme: CardThemeData(
         elevation: 0,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        shape: settingsControlShape,
         color: scheme.surfaceContainerLow,
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           minimumSize: const Size(0, 44),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          shape: settingsControlShape,
         ),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
           minimumSize: const Size(0, 44),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          shape: settingsControlShape,
         ),
       ),
       inputDecorationTheme: const InputDecorationTheme(
@@ -171,6 +174,7 @@ class BtunAppController extends ChangeNotifier {
   String profileDir;
   BtunConfig? config;
   BaleSession? session;
+  final accountSessions = <int, BaleSession>{};
   String? error;
   final logs = <UiLogRecord>[];
   BtunClientRuntime? _runtime;
@@ -178,10 +182,18 @@ class BtunAppController extends ChangeNotifier {
   bool get isRunning => status == RuntimeStatus.running;
   bool get isBusy =>
       status == RuntimeStatus.loading || status == RuntimeStatus.stopping;
-  bool get isLoggedIn => session != null;
+  bool get isLoggedIn {
+    final current = config;
+    if (current == null) return accountSessions.isNotEmpty;
+    return current.enabledAccounts.any(
+      (account) => accountSessions.containsKey(account.userId),
+    );
+  }
+
   bool get hasPeerKey => config?.peerPublicKey?.isNotEmpty ?? false;
   String get configPath => BtunConfig.defaultConfigPath(profileDir);
-  String get sessionPath => BtunConfig.defaultSessionPath(profileDir);
+  String get pendingSessionPath =>
+      '${BtunConfig.defaultAccountsDir(profileDir)}/pending.session.json';
   String get appPrefsPath => '$profileDir/gui.json';
 
   Future<void> load() async {
@@ -237,7 +249,6 @@ class BtunAppController extends ChangeNotifier {
       final next = (existing ?? BtunConfig.defaults(profileDir: profileDir))
           .copyWith(
             role: BtunRole.client,
-            sessionFile: sessionPath,
             database: BtunConfig.defaultDatabasePath(profileDir),
             localPublicKey: localKeys.publicKey,
             localPrivateKey: localKeys.privateKey,
@@ -271,7 +282,6 @@ class BtunAppController extends ChangeNotifier {
           : current.applyTransportPreset(transportPreset);
       final next = base.copyWith(
         role: BtunRole.client,
-        sessionFile: sessionPath,
         database: BtunConfig.defaultDatabasePath(profileDir),
         sessionId: sessionId?.trim().isEmpty ?? true
             ? current.sessionId
@@ -297,7 +307,9 @@ class BtunAppController extends ChangeNotifier {
     await _guard(() async {
       final current = config;
       if (current == null) throw Exception('Initialize settings first.');
-      if (session == null) throw Exception('Log in before starting SOCKS.');
+      if (accountSessions.isEmpty) {
+        throw Exception('Log in before starting SOCKS.');
+      }
       status = RuntimeStatus.loading;
       notifyListeners();
       final runtime =
@@ -353,7 +365,7 @@ class BtunAppController extends ChangeNotifier {
 
   Future<PhoneAuthResponse> startLogin(String phone) async {
     final client = BaleClient(
-      credentialsStore: FileBaleCredentialsStore(sessionPath),
+      credentialsStore: FileBaleCredentialsStore(pendingSessionPath),
     );
     try {
       final response = await client.startPhoneAuth(phone.trim());
@@ -369,14 +381,14 @@ class BtunAppController extends ChangeNotifier {
     required String code,
   }) async {
     final client = BaleClient(
-      credentialsStore: FileBaleCredentialsStore(sessionPath),
+      credentialsStore: FileBaleCredentialsStore(pendingSessionPath),
     );
     try {
       final signedIn = await client.validateCode(
         transactionHash: transactionHash,
         code: code.trim(),
       );
-      session = signedIn;
+      await _registerLoggedInSession(signedIn);
       _log(LogLevel.info, 'Logged in as user ${signedIn.userId ?? 'unknown'}.');
       notifyListeners();
       return LoginResult.complete;
@@ -398,13 +410,14 @@ class BtunAppController extends ChangeNotifier {
     required String password,
   }) async {
     final client = BaleClient(
-      credentialsStore: FileBaleCredentialsStore(sessionPath),
+      credentialsStore: FileBaleCredentialsStore(pendingSessionPath),
     );
     try {
-      session = await client.validatePassword(
+      final signedIn = await client.validatePassword(
         transactionHash: transactionHash,
         password: password,
       );
+      await _registerLoggedInSession(signedIn);
       _log(LogLevel.info, 'Two-factor login complete.');
       notifyListeners();
     } finally {
@@ -417,13 +430,14 @@ class BtunAppController extends ChangeNotifier {
     required String name,
   }) async {
     final client = BaleClient(
-      credentialsStore: FileBaleCredentialsStore(sessionPath),
+      credentialsStore: FileBaleCredentialsStore(pendingSessionPath),
     );
     try {
-      session = await client.signUp(
+      final signedIn = await client.signUp(
         transactionHash: transactionHash,
         name: name.trim(),
       );
+      await _registerLoggedInSession(signedIn);
       _log(LogLevel.info, 'Account created and logged in.');
       notifyListeners();
     } finally {
@@ -433,17 +447,56 @@ class BtunAppController extends ChangeNotifier {
 
   Future<void> logout() async {
     await stopClient();
+    final accounts = config?.accounts ?? const <BtunAccountConfig>[];
+    final account = accounts.isEmpty ? null : accounts.first;
+    if (account == null) return;
     final client = BaleClient(
-      credentialsStore: FileBaleCredentialsStore(sessionPath),
+      credentialsStore: FileBaleCredentialsStore(account.sessionFile),
     );
     try {
       await client.logout();
-      session = null;
+      accountSessions.remove(account.userId);
+      session = accountSessions.isEmpty ? null : accountSessions.values.first;
       _log(LogLevel.info, 'Logged out.');
     } finally {
       await client.close();
     }
     notifyListeners();
+  }
+
+  Future<void> removeAccount(int userId) async {
+    await stopClient();
+    await _guard(() async {
+      final current = config;
+      if (current == null) return;
+      final matches = current.accounts.where(
+        (account) => account.userId == userId,
+      );
+      if (matches.isEmpty) return;
+      final account = matches.first;
+      final next = current.removeAccount(userId);
+      await next.save(configPath);
+      final file = File(account.sessionFile);
+      if (await file.exists()) await file.delete();
+      accountSessions.remove(userId);
+      config = next;
+      session = accountSessions.isEmpty ? null : accountSessions.values.first;
+      _log(LogLevel.info, 'Removed account $userId.');
+    });
+  }
+
+  Future<void> setAccountEnabled(int userId, bool enabled) async {
+    await _guard(() async {
+      final current = config;
+      if (current == null) return;
+      final next = current.setAccountEnabled(userId, enabled);
+      await next.save(configPath);
+      config = next;
+      _log(
+        LogLevel.info,
+        '${enabled ? 'Enabled' : 'Disabled'} account $userId.',
+      );
+    });
   }
 
   void clearLogs() {
@@ -452,14 +505,49 @@ class BtunAppController extends ChangeNotifier {
   }
 
   Future<void> _restoreSession() async {
-    final client = BaleClient(
-      credentialsStore: FileBaleCredentialsStore(sessionPath),
-    );
-    try {
-      session = await client.restoreSession();
-    } finally {
-      await client.close();
+    accountSessions.clear();
+    final current = config;
+    if (current == null) {
+      session = null;
+      return;
     }
+    for (final account in current.accounts) {
+      final client = BaleClient(
+        credentialsStore: FileBaleCredentialsStore(account.sessionFile),
+      );
+      try {
+        final restored = await client.restoreSession();
+        final userId = restored?.userId;
+        if (restored != null && userId != null) {
+          accountSessions[userId] = restored;
+        }
+      } finally {
+        await client.close();
+      }
+    }
+    session = accountSessions.isEmpty ? null : accountSessions.values.first;
+  }
+
+  Future<void> _registerLoggedInSession(BaleSession signedIn) async {
+    final userId = signedIn.userId;
+    if (userId == null) throw Exception('login completed without a user id');
+    final sessionPath = BtunConfig.accountSessionPath(profileDir, userId);
+    final pending = File(pendingSessionPath);
+    final target = File(sessionPath);
+    await target.parent.create(recursive: true);
+    if (await target.exists()) await target.delete();
+    await pending.rename(sessionPath);
+    final current = config ?? BtunConfig.defaults(profileDir: profileDir);
+    final account = BtunAccountConfig(
+      userId: userId,
+      sessionFile: sessionPath,
+      enabled: true,
+    );
+    final next = current.upsertAccount(account);
+    await next.save(configPath);
+    config = next;
+    accountSessions[userId] = signedIn;
+    session = signedIn;
   }
 
   Future<void> _loadPrefs() async {
@@ -839,54 +927,6 @@ class _CheckRow extends StatelessWidget {
   }
 }
 
-class ExchangePanel extends StatelessWidget {
-  const ExchangePanel({super.key, required this.controller, this.config});
-
-  final BtunAppController controller;
-  final BtunConfig? config;
-
-  @override
-  Widget build(BuildContext context) {
-    final setupText = config == null
-        ? null
-        : 'btun client setup\nsession_id: ${config!.sessionId}\nclient_public_key: ${config!.localPublicKey}';
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SectionHeader(
-              icon: Icons.hub_outlined,
-              title: 'Key Exchange',
-              dense: true,
-              trailing: setupText == null
-                  ? null
-                  : IconButton(
-                      tooltip: 'Copy setup info for relay',
-                      onPressed: () =>
-                          Clipboard.setData(ClipboardData(text: setupText)),
-                      icon: const Icon(Icons.copy),
-                    ),
-            ),
-            const SizedBox(height: 6),
-            InfoLine(
-              label: 'Session ID',
-              value: config?.sessionId ?? 'Initialize config first',
-              copyValue: config?.sessionId,
-            ),
-            InfoLine(
-              label: 'Client public key',
-              value: config?.localPublicKey ?? 'Initialize config first',
-              copyValue: config?.localPublicKey,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class StatusPanel extends StatelessWidget {
   const StatusPanel({super.key, required this.controller});
 
@@ -981,6 +1021,7 @@ class SettingsTab extends StatefulWidget {
 class _SettingsTabState extends State<SettingsTab> {
   late final TextEditingController profile;
   late final TextEditingController sessionId;
+  late final TextEditingController clientKey;
   late final TextEditingController peerKey;
   late final TextEditingController host;
   late final TextEditingController port;
@@ -997,6 +1038,7 @@ class _SettingsTabState extends State<SettingsTab> {
     super.initState();
     profile = TextEditingController(text: widget.controller.profileDir);
     sessionId = TextEditingController();
+    clientKey = TextEditingController();
     peerKey = TextEditingController();
     host = TextEditingController();
     port = TextEditingController();
@@ -1020,6 +1062,7 @@ class _SettingsTabState extends State<SettingsTab> {
     final config = widget.controller.config;
     if (config == null) return;
     sessionId.text = config.sessionId;
+    clientKey.text = config.localPublicKey;
     peerKey.text = config.peerPublicKey ?? '';
     host.text = config.socksHost;
     port.text = config.socksPort.toString();
@@ -1035,6 +1078,7 @@ class _SettingsTabState extends State<SettingsTab> {
     saveDebounce?.cancel();
     profile.dispose();
     sessionId.dispose();
+    clientKey.dispose();
     peerKey.dispose();
     host.dispose();
     port.dispose();
@@ -1102,6 +1146,7 @@ class _SettingsTabState extends State<SettingsTab> {
                             minimumSize: const Size(60, 34),
                             padding: const EdgeInsets.symmetric(horizontal: 12),
                             textStyle: Theme.of(context).textTheme.labelMedium,
+                            shape: settingsControlShape,
                           ),
                           onPressed: () =>
                               widget.controller.setProfileDir(profile.text),
@@ -1113,30 +1158,68 @@ class _SettingsTabState extends State<SettingsTab> {
               ],
             ),
           );
-          final exchangeCard = ExchangePanel(
-            controller: widget.controller,
-            config: config,
-          );
           final accountCard = SettingsCard(
             icon: Icons.verified_user_outlined,
-            title: 'Bale Account',
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: widget.controller.isLoggedIn
-                  ? OutlinedButton.icon(
-                      onPressed: accountBusy || widget.controller.isRunning
-                          ? null
-                          : _logout,
-                      icon: const Icon(Icons.logout),
-                      label: const Text('Logout'),
-                    )
-                  : FilledButton.icon(
-                      onPressed: accountBusy || widget.controller.isRunning
-                          ? null
-                          : () => showLoginDialog(context, widget.controller),
-                      icon: const Icon(Icons.login),
-                      label: const Text('Login'),
+            title: 'Bale Accounts',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (config?.accounts.isEmpty ?? true)
+                  Text(
+                    'No accounts configured.',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
+                  )
+                else
+                  for (final account in config!.accounts)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Switch(
+                        value: account.enabled,
+                        onChanged: accountBusy || widget.controller.isRunning
+                            ? null
+                            : (value) => widget.controller.setAccountEnabled(
+                                account.userId,
+                                value,
+                              ),
+                      ),
+                      title: Text(account.userId.toString()),
+                      subtitle: Text(
+                        widget.controller.accountSessions.containsKey(
+                              account.userId,
+                            )
+                            ? 'Logged in'
+                            : 'Session not found',
+                      ),
+                      trailing: Wrap(
+                        spacing: 4,
+                        children: [
+                          IconButton(
+                            tooltip: 'Remove account',
+                            onPressed:
+                                accountBusy || widget.controller.isRunning
+                                ? null
+                                : () => widget.controller.removeAccount(
+                                    account.userId,
+                                  ),
+                            icon: const Icon(Icons.delete_outline),
+                          ),
+                        ],
+                      ),
+                    ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: FilledButton.icon(
+                    onPressed: accountBusy || widget.controller.isRunning
+                        ? null
+                        : () => showLoginDialog(context, widget.controller),
+                    icon: const Icon(Icons.login),
+                    label: const Text('Add account'),
+                  ),
+                ),
+              ],
             ),
           );
           final tunnelCard = SettingsCard(
@@ -1167,6 +1250,7 @@ class _SettingsTabState extends State<SettingsTab> {
                           minimumSize: const Size(70, 34),
                           padding: const EdgeInsets.symmetric(horizontal: 12),
                           textStyle: Theme.of(context).textTheme.labelMedium,
+                          shape: settingsControlShape,
                         ),
                         onPressed: disabled
                             ? null
@@ -1181,6 +1265,39 @@ class _SettingsTabState extends State<SettingsTab> {
                               },
                         icon: const Icon(Icons.content_paste, size: 18),
                         label: const Text('Paste'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: SettingsField(
+                        controller: clientKey,
+                        readOnly: true,
+                        maxLines: 1,
+                        label: 'Client public key',
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    SizedBox(
+                      height: 34,
+                      child: IconButton.outlined(
+                        tooltip: 'Copy client public key',
+                        style: IconButton.styleFrom(
+                          fixedSize: const Size(34, 34),
+                          minimumSize: const Size(34, 34),
+                          padding: EdgeInsets.zero,
+                          shape: settingsControlShape,
+                        ),
+                        onPressed: config?.localPublicKey.isNotEmpty ?? false
+                            ? () => Clipboard.setData(
+                                ClipboardData(text: config!.localPublicKey),
+                              )
+                            : null,
+                        icon: const Icon(Icons.copy, size: 18),
                       ),
                     ),
                   ],
@@ -1355,8 +1472,6 @@ class _SettingsTabState extends State<SettingsTab> {
                         const SizedBox(height: 12),
                         performanceCard,
                         const SizedBox(height: 12),
-                        exchangeCard,
-                        const SizedBox(height: 12),
                         appearanceCard,
                         const SizedBox(height: 12),
                         aboutCard,
@@ -1428,15 +1543,6 @@ class _SettingsTabState extends State<SettingsTab> {
     await _save(transportPreset: preset);
     _sync();
   }
-
-  Future<void> _logout() async {
-    setState(() => accountBusy = true);
-    try {
-      await widget.controller.logout();
-    } finally {
-      if (mounted) setState(() => accountBusy = false);
-    }
-  }
 }
 
 class SettingsCard extends StatelessWidget {
@@ -1483,6 +1589,7 @@ class SettingsField extends StatelessWidget {
     required this.label,
     this.helperText,
     this.enabled = true,
+    this.readOnly = false,
     this.maxLines = 1,
     this.keyboardType,
     this.onChanged,
@@ -1492,6 +1599,7 @@ class SettingsField extends StatelessWidget {
   final String label;
   final String? helperText;
   final bool enabled;
+  final bool readOnly;
   final int maxLines;
   final TextInputType? keyboardType;
   final ValueChanged<String>? onChanged;
@@ -1501,6 +1609,7 @@ class SettingsField extends StatelessWidget {
     return TextField(
       controller: controller,
       enabled: enabled,
+      readOnly: readOnly,
       maxLines: maxLines,
       keyboardType: keyboardType,
       style: Theme.of(context).textTheme.bodyMedium,

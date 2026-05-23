@@ -88,12 +88,12 @@ EOF
     return 0
   fi
 
-  if systemctl --user enable --now "$service_name"; then
-    say "service enabled and started: $service_name"
+  if systemctl --user enable "$service_name" && systemctl --user restart "$service_name"; then
+    say "service enabled and restarted: $service_name"
     say "check logs with: journalctl --user -u $service_name -f"
   else
-    say "could not enable/start service automatically"
-    say "try later with: systemctl --user enable --now $service_name"
+    say "could not enable/restart service automatically"
+    say "try later with: systemctl --user enable $service_name && systemctl --user restart $service_name"
   fi
 }
 

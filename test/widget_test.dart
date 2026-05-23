@@ -55,18 +55,17 @@ void main() {
     expect(find.text('client-a'), findsWidgets);
     expect(find.text('Profile directory'), findsOneWidget);
     expect(find.text('Initialize config'), findsNothing);
-    expect(find.text('Login'), findsOneWidget);
-    expect(find.text('Logout'), findsNothing);
+    expect(find.text('Add account'), findsOneWidget);
+    expect(find.text('No accounts configured.'), findsOneWidget);
     controller.session = const BaleSession(accessToken: 'token', userId: 123);
+    controller.accountSessions[123] = controller.session!;
     controller.notifyListeners();
     await tester.pump();
-    expect(find.text('Login'), findsNothing);
-    expect(find.text('Logout'), findsOneWidget);
+    expect(find.text('Add account'), findsOneWidget);
+    expect(find.text('Add account'), findsOneWidget);
     expect(find.text('Relay public key'), findsOneWidget);
-
-    await tester.drag(find.byType(ListView).last, const Offset(0, -450));
-    await tester.pump();
-    expect(find.text('Key Exchange'), findsOneWidget);
+    expect(find.text('Client public key'), findsOneWidget);
+    expect(find.text('Key Exchange'), findsNothing);
 
     await tester.drag(find.byType(ListView).last, const Offset(0, -700));
     await tester.pump();
