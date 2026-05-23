@@ -989,6 +989,7 @@ class _SettingsTabState extends State<SettingsTab> {
   late final TextEditingController pollMs;
   late final TextEditingController uploadRate;
   var selectedPreset = BtunTransportPreset.stable;
+  var accountBusy = false;
   Timer? saveDebounce;
 
   @override
@@ -1115,6 +1116,49 @@ class _SettingsTabState extends State<SettingsTab> {
           final exchangeCard = ExchangePanel(
             controller: widget.controller,
             config: config,
+          );
+          final accountCard = SettingsCard(
+            icon: Icons.verified_user_outlined,
+            title: 'Bale Account',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                StatusBadge(
+                  icon: Icons.account_circle_outlined,
+                  label: 'Session',
+                  value: widget.controller.isLoggedIn
+                      ? 'Logged in as user ${widget.controller.session?.userId ?? 'unknown'}'
+                      : 'Not logged in',
+                  good: widget.controller.isLoggedIn,
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: accountBusy || widget.controller.isRunning
+                          ? null
+                          : () => showLoginDialog(context, widget.controller),
+                      icon: const Icon(Icons.login),
+                      label: Text(
+                        widget.controller.isLoggedIn ? 'Login again' : 'Login',
+                      ),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed:
+                          accountBusy ||
+                              !widget.controller.isLoggedIn ||
+                              widget.controller.isRunning
+                          ? null
+                          : _logout,
+                      icon: const Icon(Icons.logout),
+                      label: const Text('Logout'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           );
           final tunnelCard = SettingsCard(
             icon: Icons.vpn_key_outlined,
@@ -1326,6 +1370,8 @@ class _SettingsTabState extends State<SettingsTab> {
                       children: [
                         profileCard,
                         const SizedBox(height: 12),
+                        accountCard,
+                        const SizedBox(height: 12),
                         tunnelCard,
                         const SizedBox(height: 12),
                         performanceCard,
@@ -1402,6 +1448,15 @@ class _SettingsTabState extends State<SettingsTab> {
     }
     await _save(transportPreset: preset);
     _sync();
+  }
+
+  Future<void> _logout() async {
+    setState(() => accountBusy = true);
+    try {
+      await widget.controller.logout();
+    } finally {
+      if (mounted) setState(() => accountBusy = false);
+    }
   }
 }
 

@@ -144,13 +144,13 @@ if [ "$run_setup" = "0" ]; then
 fi
 
 say "starting interactive relay setup"
-say "choose role 'relay', log in to Bale when prompted, then copy the relay_public_key shown at the end"
+say "relay role is selected automatically; log in to Bale when prompted, then copy the relay_public_key shown at the end"
 if [ -r /dev/tty ]; then
-  "$install_dir/$binary_name" setup --profile "$profile" </dev/tty
+  "$install_dir/$binary_name" setup --profile "$profile" --role relay </dev/tty
   install_systemd_service
   exit 0
 fi
 
 say "no interactive terminal is available for setup"
-say "run: $install_dir/$binary_name setup --profile $profile"
+say "run: $install_dir/$binary_name setup --profile $profile --role relay"
 exit 1

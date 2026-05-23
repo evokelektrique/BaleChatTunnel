@@ -253,6 +253,7 @@ class BtunCli {
       profileFromArgs: _value('profile'),
       configPathFromArgs: _value('config'),
       sessionPathFromArgs: _value('session'),
+      roleFromArgs: _roleValue('role'),
       loginRunner: _loginForSetup,
     );
     await wizard.run();
@@ -749,6 +750,16 @@ class BtunCli {
     );
   }
 
+  BtunRole? _roleValue(String name) {
+    final value = _value(name);
+    if (value == null) return null;
+    return switch (value.trim().toLowerCase()) {
+      'client' => BtunRole.client,
+      'relay' => BtunRole.relay,
+      _ => throw Exception('invalid role: $value'),
+    };
+  }
+
   String _localKeyLabel(BtunRole role) => switch (role) {
     BtunRole.client => 'client_public_key',
     BtunRole.relay => 'relay_public_key',
@@ -800,6 +811,7 @@ Options:
   --profile <dir>          Default: .btun
   --config <path>          Default: <profile>/config.json
   --session <path>         Default: <profile>/session.json
+  --role <client|relay>    Setup role override
   --session-id <id>        Override session id
   --transport-preset <p>   interactive, stable, resilient, or custom
   --upload-delay-ms <n>    upload-test delay between files. Default: 1000

@@ -17,6 +17,7 @@ class BtunSetupWizard {
     required this.profileFromArgs,
     required this.configPathFromArgs,
     required this.sessionPathFromArgs,
+    required this.roleFromArgs,
     required this.loginRunner,
   });
 
@@ -26,6 +27,7 @@ class BtunSetupWizard {
     required String? profileFromArgs,
     required String? configPathFromArgs,
     required String? sessionPathFromArgs,
+    required BtunRole? roleFromArgs,
     required LoginRunner loginRunner,
   }) : this(
          readLine: stdin.readLineSync,
@@ -34,6 +36,7 @@ class BtunSetupWizard {
          profileFromArgs: profileFromArgs,
          configPathFromArgs: configPathFromArgs,
          sessionPathFromArgs: sessionPathFromArgs,
+         roleFromArgs: roleFromArgs,
          loginRunner: loginRunner,
        );
 
@@ -43,6 +46,7 @@ class BtunSetupWizard {
   final String? profileFromArgs;
   final String? configPathFromArgs;
   final String? sessionPathFromArgs;
+  final BtunRole? roleFromArgs;
   final LoginRunner loginRunner;
 
   Future<BtunConfig> run() async {
@@ -85,13 +89,16 @@ class BtunSetupWizard {
     }
 
     final defaults = existing ?? BtunConfig.defaults(profileDir: profile);
-    final role = await promptRole(
-      'This machine role (client/relay)',
-      defaultValue: existing?.role ?? BtunRole.relay,
-      help:
-          'relay runs on the machine that connects to destination hosts. '
-          'client runs a local SOCKS proxy.',
-    );
+    final role =
+        roleFromArgs ??
+        await promptRole(
+          'This machine role (client/relay)',
+          defaultValue: existing?.role ?? BtunRole.relay,
+          help:
+              'relay runs on the machine that connects to destination hosts. '
+              'client runs a local SOCKS proxy.',
+        );
+    if (roleFromArgs != null) writeln('Using role ${role.name}.');
 
     var localPublicKey = defaults.localPublicKey;
     var localPrivateKey = defaults.localPrivateKey;

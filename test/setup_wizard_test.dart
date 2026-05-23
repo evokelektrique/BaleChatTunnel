@@ -220,6 +220,30 @@ void main() {
       expect(config.blockPrivateIps, isTrue);
       expect(config.dnsOnRelay, isTrue);
     });
+
+    test('role argument overrides existing client config', () async {
+      final temp = await Directory.systemTemp.createTemp('btun_setup_test_');
+      addTearDown(() => temp.delete(recursive: true));
+      final path = BtunConfig.defaultConfigPath(temp.path);
+      await BtunConfig.defaults(
+        profileDir: temp.path,
+      ).copyWith(role: BtunRole.client).save(path);
+      final output = StringBuffer();
+
+      await _wizard(
+        lines: [
+          'yes',
+          ..._defaultSetupLines(login: 'no', role: false),
+        ],
+        output: output,
+        profile: temp.path,
+        role: BtunRole.relay,
+      ).run();
+
+      final config = await BtunConfig.load(path);
+      expect(config.role, BtunRole.relay);
+      expect(output.toString(), contains('Using role relay.'));
+    });
   });
 }
 
@@ -227,6 +251,7 @@ BtunSetupWizard _wizard({
   required List<String> lines,
   required StringBuffer output,
   String? profile,
+  BtunRole? role,
 }) {
   var index = 0;
   return BtunSetupWizard(
@@ -236,11 +261,12 @@ BtunSetupWizard _wizard({
     profileFromArgs: profile,
     configPathFromArgs: null,
     sessionPathFromArgs: null,
+    roleFromArgs: role,
     loginRunner: (_, _) async => true,
   );
 }
 
-List<String> _defaultSetupLines({required String login}) => [
-  ...List.filled(7, ''),
+List<String> _defaultSetupLines({required String login, bool role = true}) => [
+  ...List.filled(role ? 7 : 6, ''),
   login,
 ];
