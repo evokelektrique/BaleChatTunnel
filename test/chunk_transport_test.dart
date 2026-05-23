@@ -35,7 +35,7 @@ void main() {
       maxInFlight: 1,
       logger: const Logger(),
       flushDelay: const Duration(minutes: 1),
-      immediateDataThreshold: -1,
+      interactiveFlushDelay: const Duration(minutes: 1),
       controlFlushDelay: const Duration(minutes: 1),
       ackDelay: const Duration(minutes: 1),
     );
@@ -66,7 +66,7 @@ void main() {
     await chunkTransport.close();
   });
 
-  test('chunk transport sends tiny data immediately', () async {
+  test('chunk transport batches tiny data with adaptive flush delay', () async {
     final temp = await Directory.systemTemp.createTemp('btun_small_test_');
     addTearDown(() => temp.delete(recursive: true));
     final clientKeys = await BtunCrypto.generateKeyPair();
@@ -95,25 +95,107 @@ void main() {
       maxInFlight: 1,
       logger: const Logger(),
       flushDelay: const Duration(minutes: 1),
+      interactiveFlushDelay: const Duration(milliseconds: 20),
       controlFlushDelay: const Duration(minutes: 1),
       ackDelay: const Duration(minutes: 1),
     );
     await chunkTransport.start();
 
     expect(transport.sent, isEmpty);
-    await chunkTransport.sendFrame(
-      TunnelFrame.data(
-        sessionId: config.sessionId,
-        direction: Direction.c2r,
-        streamId: 1,
-        sequenceNumber: 1,
-        payload: [1, 2, 3],
-      ),
-    );
+    for (var i = 0; i < 3; i++) {
+      await chunkTransport.sendFrame(
+        TunnelFrame.data(
+          sessionId: config.sessionId,
+          direction: Direction.c2r,
+          streamId: 1,
+          sequenceNumber: i + 1,
+          payload: [i],
+        ),
+      );
+    }
 
+    expect(transport.sent, isEmpty);
+    await Future<void>.delayed(const Duration(milliseconds: 60));
     expect(transport.sent, hasLength(1));
+    final relayCrypto = await BtunCrypto.fromConfig(
+      BtunConfig.defaults(profileDir: temp.path).copyWith(
+        sessionId: 'testsession',
+        localPublicKey: relayKeys.publicKey,
+        localPrivateKey: relayKeys.privateKey,
+        peerPublicKey: clientKeys.publicKey,
+      ),
+      send: Direction.r2c,
+      receive: Direction.c2r,
+    );
+    final sent = EncryptedChunkFile.decode(transport.sent.single.bytes);
+    final plain = await relayCrypto.decrypt(sent);
+    expect(plain.frames, hasLength(3));
     await chunkTransport.close();
   });
+
+  test(
+    'chunk transport flushes interactive burst below regular chunk size',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'btun_interactive_burst_test_',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final clientKeys = await BtunCrypto.generateKeyPair();
+      final relayKeys = await BtunCrypto.generateKeyPair();
+      final config = BtunConfig.defaults(profileDir: temp.path).copyWith(
+        sessionId: 'testsession',
+        localPublicKey: clientKeys.publicKey,
+        localPrivateKey: clientKeys.privateKey,
+        peerPublicKey: relayKeys.publicKey,
+        chunkSize: 1024 * 1024,
+      );
+      final transport = _FakeTransport();
+      final chunkTransport = ChunkTransport(
+        transport: transport,
+        crypto: await BtunCrypto.fromConfig(
+          config,
+          send: Direction.c2r,
+          receive: Direction.r2c,
+        ),
+        stateDb: StateDb.open('${temp.path}/state.json'),
+        sessionId: config.sessionId,
+        sendDirection: Direction.c2r,
+        receiveDirection: Direction.r2c,
+        chunkSize: config.chunkSize,
+        retryTimeout: const Duration(minutes: 1),
+        maxInFlight: 1,
+        logger: const Logger(),
+        flushDelay: const Duration(minutes: 1),
+        interactiveChunkSize: 1400,
+        interactiveFlushDelay: const Duration(minutes: 1),
+        ackDelay: const Duration(minutes: 1),
+      );
+      await chunkTransport.start();
+
+      await chunkTransport.sendFrame(
+        TunnelFrame.data(
+          sessionId: config.sessionId,
+          direction: Direction.c2r,
+          streamId: 1,
+          sequenceNumber: 1,
+          payload: List<int>.filled(800, 1),
+        ),
+      );
+      expect(transport.sent, isEmpty);
+      await chunkTransport.sendFrame(
+        TunnelFrame.data(
+          sessionId: config.sessionId,
+          direction: Direction.c2r,
+          streamId: 1,
+          sequenceNumber: 2,
+          payload: List<int>.filled(800, 2),
+        ),
+      );
+
+      expect(transport.sent, hasLength(1));
+      await chunkTransport.close();
+    },
+  );
 
   test(
     'chunk transport flushes ack immediately when ack delay is zero',
@@ -360,7 +442,6 @@ void main() {
       logger: const Logger(),
       flushDelay: const Duration(minutes: 1),
       bulkFlushDelay: const Duration(minutes: 1),
-      immediateDataThreshold: -1,
     );
     await chunkTransport.start();
 
@@ -384,8 +465,110 @@ void main() {
     );
 
     expect(transport.sent, isEmpty);
+    await chunkTransport.sendFrame(
+      TunnelFrame.data(
+        sessionId: config.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 3,
+        payload: List<int>.filled(800, 3),
+      ),
+    );
+    expect(transport.sent, hasLength(1));
+    await chunkTransport.sendFrame(
+      TunnelFrame.data(
+        sessionId: config.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 4,
+        payload: List<int>.filled(800, 4),
+      ),
+    );
+    expect(transport.sent, hasLength(1));
+    await chunkTransport.sendFrame(
+      TunnelFrame.data(
+        sessionId: config.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 5,
+        payload: List<int>.filled(800, 5),
+      ),
+    );
+    expect(transport.sent, hasLength(2));
+    await chunkTransport.close();
+  });
+
+  test('chunk transport resets idle stream to interactive mode', () async {
+    final temp = await Directory.systemTemp.createTemp('btun_idle_test_');
+    addTearDown(() => temp.delete(recursive: true));
+    final clientKeys = await BtunCrypto.generateKeyPair();
+    final relayKeys = await BtunCrypto.generateKeyPair();
+    final config = BtunConfig.defaults(profileDir: temp.path).copyWith(
+      sessionId: 'testsession',
+      localPublicKey: clientKeys.publicKey,
+      localPrivateKey: clientKeys.privateKey,
+      peerPublicKey: relayKeys.publicKey,
+      chunkSize: 10000,
+    );
+    final transport = _FakeTransport();
+    final chunkTransport = ChunkTransport(
+      transport: transport,
+      crypto: await BtunCrypto.fromConfig(
+        config,
+        send: Direction.c2r,
+        receive: Direction.r2c,
+      ),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      sessionId: config.sessionId,
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      chunkSize: config.chunkSize,
+      retryTimeout: const Duration(minutes: 1),
+      maxInFlight: 1,
+      logger: const Logger(),
+      flushDelay: const Duration(minutes: 1),
+      interactiveChunkSize: 700,
+      interactiveFrameLimit: 1,
+      interactiveWindow: Duration.zero,
+      streamIdleTimeout: const Duration(milliseconds: 30),
+      ackDelay: const Duration(minutes: 1),
+    );
+    await chunkTransport.start();
+
+    await chunkTransport.sendFrame(
+      TunnelFrame.data(
+        sessionId: config.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 1,
+        payload: [1],
+      ),
+    );
+    await chunkTransport.sendFrame(
+      TunnelFrame.data(
+        sessionId: config.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 2,
+        payload: [2],
+      ),
+    );
+    expect(transport.sent, isEmpty);
     await chunkTransport.flush();
     expect(transport.sent, hasLength(1));
+
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    await chunkTransport.sendFrame(
+      TunnelFrame.data(
+        sessionId: config.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 3,
+        payload: List<int>.filled(800, 3),
+      ),
+    );
+
+    expect(transport.sent, hasLength(2));
     await chunkTransport.close();
   });
 
@@ -771,7 +954,7 @@ void main() {
     expect(interactive.pollInterval, const Duration(milliseconds: 500));
     expect(interactive.uploadMinInterval, Duration.zero);
     expect(interactive.uploadRateLimitPerMinute, 50);
-    expect(interactive.ackFlushInterval, Duration.zero);
+    expect(interactive.ackFlushInterval, const Duration(milliseconds: 100));
     expect(interactive.flushDelay, Duration.zero);
     expect(interactive.bulkFlushDelay, const Duration(milliseconds: 50));
 

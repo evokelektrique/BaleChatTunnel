@@ -113,10 +113,126 @@ void main() {
       0x68,
       0x69,
     ]);
+    await _waitFor(() => fakeTransport.sent.isNotEmpty);
+    final readyChunk = EncryptedChunkFile.decode(
+      fakeTransport.sent.first.bytes,
+    );
+    final readyPlain = await clientCrypto.decrypt(readyChunk);
+    expect(
+      readyPlain.frames.map((frame) => frame.type),
+      contains(FrameType.ready),
+    );
 
     await relay.close();
     await relayChunkTransport.close();
   });
+
+  test('relay sends reset when OPEN cannot connect', () async {
+    final temp = await Directory.systemTemp.createTemp('btun_relay_fail_test_');
+    addTearDown(() async {
+      await temp.delete(recursive: true);
+    });
+
+    final clientKeys = await BtunCrypto.generateKeyPair();
+    final relayKeys = await BtunCrypto.generateKeyPair();
+    final sessionId = 'relayfail';
+    final clientConfig = BtunConfig.defaults(profileDir: temp.path).copyWith(
+      sessionId: sessionId,
+      localPublicKey: clientKeys.publicKey,
+      localPrivateKey: clientKeys.privateKey,
+      peerPublicKey: relayKeys.publicKey,
+    );
+    final relayConfig = BtunConfig.defaults(profileDir: temp.path).copyWith(
+      sessionId: sessionId,
+      localPublicKey: relayKeys.publicKey,
+      localPrivateKey: relayKeys.privateKey,
+      peerPublicKey: clientKeys.publicKey,
+    );
+    final fakeTransport = _FakeTransport();
+    final relayChunkTransport = ChunkTransport(
+      transport: fakeTransport,
+      crypto: await BtunCrypto.fromConfig(
+        relayConfig,
+        send: Direction.r2c,
+        receive: Direction.c2r,
+      ),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      sessionId: sessionId,
+      sendDirection: Direction.r2c,
+      receiveDirection: Direction.c2r,
+      chunkSize: relayConfig.chunkSize,
+      retryTimeout: relayConfig.retryTimeout,
+      maxInFlight: 1,
+      logger: const Logger(),
+      controlFlushDelay: Duration.zero,
+      ackDelay: const Duration(minutes: 1),
+    );
+    final relay = TcpRelay(
+      chunkTransport: relayChunkTransport,
+      policy: RelayPolicy(
+        allowPorts: const {},
+        blockPrivateIps: false,
+        dnsOnRelay: true,
+      ),
+      logger: const Logger(),
+    );
+    await relayChunkTransport.start();
+    await relay.start();
+
+    final clientCrypto = await BtunCrypto.fromConfig(
+      clientConfig,
+      send: Direction.c2r,
+      receive: Direction.r2c,
+    );
+    final chunk = await clientCrypto.encrypt(
+      PlainChunk(
+        version: 1,
+        sessionId: sessionId,
+        direction: Direction.c2r,
+        sequenceNumber: 1,
+        frames: [
+          TunnelFrame.open(
+            sessionId: sessionId,
+            direction: Direction.c2r,
+            streamId: 7,
+            sequenceNumber: 1,
+            host: 'example.com',
+            port: 443,
+          ),
+        ],
+      ),
+    );
+    fakeTransport.addIncoming(
+      IncomingTunnelFile(
+        messageId: '1',
+        fileName: btunFileName(sessionId, Direction.c2r, 1),
+        bytes: chunk.encode(),
+      ),
+    );
+
+    await _waitFor(() => fakeTransport.sent.isNotEmpty);
+    final resetChunk = EncryptedChunkFile.decode(
+      fakeTransport.sent.first.bytes,
+    );
+    final resetPlain = await clientCrypto.decrypt(resetChunk);
+    expect(
+      resetPlain.frames.map((frame) => frame.type),
+      contains(FrameType.reset),
+    );
+
+    await relay.close();
+    await relayChunkTransport.close();
+  });
+}
+
+Future<void> _waitFor(bool Function() condition) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 3));
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('condition not met');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
 }
 
 class _FakeTransport implements TunnelTransport {
