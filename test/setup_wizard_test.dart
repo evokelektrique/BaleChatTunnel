@@ -35,6 +35,38 @@ void main() {
       );
     });
 
+    test('parses transport presets and legacy aliases', () {
+      expect(
+        parseTransportPreset('', defaultValue: BtunTransportPreset.stable),
+        BtunTransportPreset.stable,
+      );
+      expect(
+        parseTransportPreset(
+          'interactive',
+          defaultValue: BtunTransportPreset.stable,
+        ),
+        BtunTransportPreset.interactive,
+      );
+      expect(
+        parseTransportPreset(
+          'balanced',
+          defaultValue: BtunTransportPreset.custom,
+        ),
+        BtunTransportPreset.stable,
+      );
+      expect(
+        parseTransportPreset('slow', defaultValue: BtunTransportPreset.custom),
+        BtunTransportPreset.resilient,
+      );
+      expect(
+        () => parseTransportPreset(
+          'reckless',
+          defaultValue: BtunTransportPreset.stable,
+        ),
+        throwsFormatException,
+      );
+    });
+
     test('? help repeats prompt and invalid input retries', () async {
       final output = StringBuffer();
       final wizard = _wizard(lines: ['?', 'later', 'yes'], output: output);
@@ -118,6 +150,7 @@ void main() {
             'peer-key',
             '127.0.0.2',
             '1081',
+            'custom',
             '111111',
             '222222',
             '3',
@@ -166,6 +199,7 @@ void main() {
         expect(config.maxRetryChunks, 7);
         expect(config.maxRetryBytes, 123456);
         expect(config.maxStreams, 9);
+        expect(config.transportPreset, BtunTransportPreset.custom);
       },
     );
 
@@ -207,6 +241,6 @@ BtunSetupWizard _wizard({
 }
 
 List<String> _defaultSetupLines({required String login}) => [
-  ...List.filled(19, ''),
+  ...List.filled(7, ''),
   login,
 ];

@@ -12,7 +12,7 @@ void main() {
 
     expect(find.text('Connect'), findsNothing);
     expect(find.text('Disconnect'), findsNothing);
-    expect(find.byIcon(Icons.power_settings_new), findsOneWidget);
+    expect(find.byIcon(Icons.power_settings_new_outlined), findsOneWidget);
     expect(find.byIcon(Icons.cloud_outlined), findsNothing);
     expect(find.text('Config'), findsOneWidget);
     expect(find.text('Bale'), findsOneWidget);
@@ -20,7 +20,7 @@ void main() {
     expect(find.text('Bale login'), findsNothing);
     expect(find.text('Phone number'), findsNothing);
     expect(find.text('Login'), findsNothing);
-    await tester.tap(find.byIcon(Icons.power_settings_new));
+    await tester.tap(find.byIcon(Icons.power_settings_new_outlined));
     await tester.pump(const Duration(milliseconds: 300));
     expect(controller.error, isNull);
     expect(find.text('Login'), findsOneWidget);
@@ -67,9 +67,7 @@ void main() {
     await tester.drag(find.byType(ListView).last, const Offset(0, -450));
     await tester.pump();
     expect(find.text('Key Exchange'), findsOneWidget);
-    expect(find.text('Config'), findsOneWidget);
-    expect(find.text('Bale'), findsOneWidget);
-    expect(find.text('Relay key'), findsOneWidget);
+    expect(find.text('Need from relay'), findsNothing);
 
     await tester.drag(find.byType(ListView).last, const Offset(0, -700));
     await tester.pump();
