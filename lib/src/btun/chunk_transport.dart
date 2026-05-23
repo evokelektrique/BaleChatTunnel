@@ -23,6 +23,7 @@ class ChunkTransport {
     this.flushDelay = const Duration(milliseconds: 1000),
     this.bulkFlushDelay = const Duration(milliseconds: 250),
     this.bulkChunkSize = 524288,
+    this.immediateDataThreshold = 2048,
     this.controlFlushDelay = const Duration(milliseconds: 100),
     this.ackDelay = const Duration(milliseconds: 10000),
     this.retryTick = const Duration(seconds: 10),
@@ -43,6 +44,7 @@ class ChunkTransport {
   final Duration flushDelay;
   final Duration bulkFlushDelay;
   final int bulkChunkSize;
+  final int immediateDataThreshold;
   final Duration controlFlushDelay;
   final Duration ackDelay;
   final Duration retryTick;
@@ -81,14 +83,16 @@ class ChunkTransport {
     var hasUrgentControl = false;
     var hasInteractiveControl = false;
     var hasBulkData = false;
+    var hasTinyData = false;
     for (final frame in frames) {
       _queuedFrames.add(frame);
       _queuedBytes += _estimateFrameBytes(frame);
       if (_isUrgentControl(frame)) hasUrgentControl = true;
       if (_isInteractiveControl(frame)) hasInteractiveControl = true;
       if (_isBulkData(frame)) hasBulkData = true;
+      if (_isTinyData(frame)) hasTinyData = true;
     }
-    if (_queuedBytes >= _currentChunkTarget) {
+    if (_queuedBytes >= _currentChunkTarget || hasTinyData) {
       await flush();
       return;
     }
@@ -211,6 +215,10 @@ class ChunkTransport {
       _scheduleFlush(flushDelay);
       return;
     }
+    if (ackDelay == Duration.zero) {
+      unawaited(flush());
+      return;
+    }
     _ackTimer ??= Timer(ackDelay, () {
       _ackTimer = null;
       unawaited(flush());
@@ -295,6 +303,14 @@ class ChunkTransport {
 
   void _scheduleFlush(Duration delay) {
     if (_closed) return;
+    if (delay == Duration.zero) {
+      unawaited(
+        flush().catchError((Object error) {
+          logger.warn('flush failed: $error');
+        }),
+      );
+      return;
+    }
     final current = _flushTimer;
     if (current != null && current.isActive) return;
     _flushTimer = Timer(delay, () {
@@ -322,6 +338,12 @@ class ChunkTransport {
     _streamPayloadBytes[frame.streamId] = total;
     if (total >= chunkSize) _bulkStreams.add(frame.streamId);
     return _bulkStreams.contains(frame.streamId);
+  }
+
+  bool _isTinyData(TunnelFrame frame) {
+    return frame.type == FrameType.data &&
+        immediateDataThreshold >= 0 &&
+        frame.payload.length <= immediateDataThreshold;
   }
 
   int get _currentChunkTarget {

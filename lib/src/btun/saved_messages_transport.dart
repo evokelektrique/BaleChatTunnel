@@ -47,6 +47,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   final _queuedUploads = <int, Future<void>>{};
   final _downloadRetryAfter = <String, DateTime>{};
   final _uploadWindow = <DateTime>[];
+  Future<void> _uploadSlotTail = Future.value();
   var _adaptiveUploadRateLimit = 0;
   var _rateLimitEvents = 0;
   var _transientHttpEvents = 0;
@@ -125,10 +126,8 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   }
 
   Future<void> _sendFileNow(OutgoingTunnelFile file) async {
-    await _waitForUploadPace();
     await _withRateLimitBackoff('send ${file.fileName}', () async {
-      await _waitForUploadRateSlot();
-      _recordUploadAttempt();
+      await _reserveUploadAttempt();
       return client.sendDocument(
         peer: _savedMessagesPeer,
         file: BaleFileInput.bytes(
@@ -138,11 +137,21 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         ),
       );
     });
-    _lastUploadAt = DateTime.now();
     logger.info(
       'sent upload seq=${file.sequenceNumber} bytes=${file.bytes.length}',
     );
     _logUploadWindowStats();
+  }
+
+  Future<void> _reserveUploadAttempt() {
+    final reservation = _uploadSlotTail.then((_) async {
+      await _waitForUploadPace();
+      await _waitForUploadRateSlot();
+      _recordUploadAttempt();
+      _lastUploadAt = DateTime.now();
+    });
+    _uploadSlotTail = reservation.catchError((_) {});
+    return reservation;
   }
 
   Future<void> _poll() async {
