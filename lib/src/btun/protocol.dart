@@ -113,6 +113,21 @@ class TunnelFrame {
     type: FrameType.ack,
   );
 
+  factory TunnelFrame.ready({
+    required String sessionId,
+    required Direction direction,
+    required int streamId,
+    required int sequenceNumber,
+  }) => TunnelFrame(
+    version: 1,
+    sessionId: sessionId,
+    direction: direction,
+    streamId: streamId,
+    sequenceNumber: sequenceNumber,
+    ackNumber: 0,
+    type: FrameType.ready,
+  );
+
   factory TunnelFrame.close({
     required String sessionId,
     required Direction direction,

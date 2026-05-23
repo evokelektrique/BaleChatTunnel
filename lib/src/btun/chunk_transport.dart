@@ -23,6 +23,12 @@ class ChunkTransport {
     this.flushDelay = const Duration(milliseconds: 1000),
     this.bulkFlushDelay = const Duration(milliseconds: 250),
     this.bulkChunkSize = 524288,
+    this.interactiveChunkSize = 4096,
+    this.interactiveFlushDelay = const Duration(milliseconds: 20),
+    this.interactiveFrameLimit = 8,
+    this.interactiveWindow = const Duration(seconds: 3),
+    this.streamIdleTimeout = const Duration(seconds: 2),
+    @Deprecated('Adaptive chunking replaces immediate tiny DATA flushing.')
     this.immediateDataThreshold = 2048,
     this.controlFlushDelay = const Duration(milliseconds: 100),
     this.ackDelay = const Duration(milliseconds: 10000),
@@ -44,6 +50,12 @@ class ChunkTransport {
   final Duration flushDelay;
   final Duration bulkFlushDelay;
   final int bulkChunkSize;
+  final int interactiveChunkSize;
+  final Duration interactiveFlushDelay;
+  final int interactiveFrameLimit;
+  final Duration interactiveWindow;
+  final Duration streamIdleTimeout;
+  @Deprecated('Adaptive chunking replaces immediate tiny DATA flushing.')
   final int immediateDataThreshold;
   final Duration controlFlushDelay;
   final Duration ackDelay;
@@ -57,8 +69,7 @@ class ChunkTransport {
   Timer? _ackTimer;
   Future<void> _flushTail = Future.value();
   final _queuedFrames = <TunnelFrame>[];
-  final _bulkStreams = <int>{};
-  final _streamPayloadBytes = <int, int>{};
+  final _streamStates = <int, _StreamChunkState>{};
   final _retryCache = <int, _RetryChunk>{};
   var _retryCacheBytes = 0;
   var _queuedBytes = 0;
@@ -83,16 +94,16 @@ class ChunkTransport {
     var hasUrgentControl = false;
     var hasInteractiveControl = false;
     var hasBulkData = false;
-    var hasTinyData = false;
+    var hasInteractiveData = false;
     for (final frame in frames) {
       _queuedFrames.add(frame);
       _queuedBytes += _estimateFrameBytes(frame);
       if (_isUrgentControl(frame)) hasUrgentControl = true;
       if (_isInteractiveControl(frame)) hasInteractiveControl = true;
       if (_isBulkData(frame)) hasBulkData = true;
-      if (_isTinyData(frame)) hasTinyData = true;
+      if (_isInteractiveData(frame)) hasInteractiveData = true;
     }
-    if (_queuedBytes >= _currentChunkTarget || hasTinyData) {
+    if (_queuedBytes >= _currentChunkTarget) {
       await flush();
       return;
     }
@@ -100,6 +111,8 @@ class ChunkTransport {
         ? controlFlushDelay
         : hasBulkData
         ? bulkFlushDelay
+        : hasInteractiveData
+        ? _shorterDelay(flushDelay, interactiveFlushDelay)
         : flushDelay;
     _scheduleFlush(delay);
   }
@@ -131,7 +144,7 @@ class ChunkTransport {
     }
     if (frames.isEmpty) return;
     final sequence = _nextSequence++;
-    _logChunkSummary(sequence, frames);
+    _logChunkSummary(sequence, frames, _targetForFrames(frames));
     final chunk = PlainChunk(
       version: 2,
       sessionId: sessionId,
@@ -333,47 +346,141 @@ class ChunkTransport {
 
   bool _isBulkData(TunnelFrame frame) {
     if (frame.type != FrameType.data) return false;
-    final total =
-        (_streamPayloadBytes[frame.streamId] ?? 0) + frame.payload.length;
-    _streamPayloadBytes[frame.streamId] = total;
-    if (total >= chunkSize) _bulkStreams.add(frame.streamId);
-    return _bulkStreams.contains(frame.streamId);
+    final state = _stateFor(frame);
+    return state.mode == _ChunkMode.bulk;
   }
 
-  bool _isTinyData(TunnelFrame frame) {
-    return frame.type == FrameType.data &&
-        immediateDataThreshold >= 0 &&
-        frame.payload.length <= immediateDataThreshold;
+  bool _isInteractiveData(TunnelFrame frame) {
+    if (frame.type != FrameType.data) return false;
+    final state = _streamStates[frame.streamId];
+    return state == null || state.mode == _ChunkMode.interactive;
   }
 
   int get _currentChunkTarget {
-    if (_queuedFrames.any(
-      (frame) =>
-          frame.type == FrameType.data && _bulkStreams.contains(frame.streamId),
-    )) {
-      return bulkChunkSize > chunkSize ? bulkChunkSize : chunkSize;
+    return _targetForFrames(_queuedFrames);
+  }
+
+  int _targetForFrames(List<TunnelFrame> frames) {
+    var hasData = false;
+    var hasBulk = false;
+    var hasInteractive = false;
+    for (final frame in frames) {
+      if (frame.type != FrameType.data) continue;
+      hasData = true;
+      final mode = _modeFor(frame.streamId);
+      if (mode == _ChunkMode.bulk) hasBulk = true;
+      if (mode == _ChunkMode.interactive) hasInteractive = true;
     }
-    return chunkSize;
+    if (!hasData) return _clampTarget(chunkSize);
+    if (hasBulk) return _targetForMode(_ChunkMode.bulk);
+    if (hasInteractive) return _targetForMode(_ChunkMode.interactive);
+    return _targetForMode(_ChunkMode.steady);
+  }
+
+  _StreamChunkState _stateFor(TunnelFrame frame) {
+    final now = DateTime.now();
+    final state = _streamStates.putIfAbsent(
+      frame.streamId,
+      () => _StreamChunkState(now),
+    );
+    state.update(frame.payload.length, now, this);
+    return state;
+  }
+
+  _ChunkMode _modeFor(int streamId) {
+    return _streamStates[streamId]?.mode ?? _ChunkMode.steady;
+  }
+
+  int _targetForMode(_ChunkMode mode) {
+    return switch (mode) {
+      _ChunkMode.interactive => _minPositive(
+        _clampTarget(interactiveChunkSize),
+        _clampTarget(chunkSize),
+      ),
+      _ChunkMode.steady => _clampTarget(chunkSize),
+      _ChunkMode.bulk => _clampTarget(
+        bulkChunkSize > chunkSize ? bulkChunkSize : chunkSize,
+      ),
+    };
+  }
+
+  int _clampTarget(int value) {
+    if (value <= 0) return 1;
+    return value;
+  }
+
+  int _minPositive(int a, int b) {
+    if (a <= 0) return b;
+    if (b <= 0) return a;
+    return a < b ? a : b;
+  }
+
+  Duration _shorterDelay(Duration a, Duration b) {
+    if (a == Duration.zero || b == Duration.zero) return Duration.zero;
+    return a < b ? a : b;
   }
 
   int _estimateFrameBytes(TunnelFrame frame) {
     return frame.payload.length + (frame.host?.length ?? 0) + 256;
   }
 
-  void _logChunkSummary(int sequence, List<TunnelFrame> frames) {
+  void _logChunkSummary(int sequence, List<TunnelFrame> frames, int target) {
     final counts = <FrameType, int>{};
     var payloadBytes = 0;
+    _ChunkMode? mode;
     for (final frame in frames) {
       counts[frame.type] = (counts[frame.type] ?? 0) + 1;
       payloadBytes += frame.payload.length;
+      if (frame.type == FrameType.data) {
+        final frameMode = _modeFor(frame.streamId);
+        if (mode == null || frameMode.index > mode.index) mode = frameMode;
+      }
     }
     final types = counts.entries
         .map((entry) => '${entry.key.name}:${entry.value}')
         .join(',');
     logger.info(
       'chunk seq=$sequence frames=${frames.length} types=$types '
-      'payload=$payloadBytes',
+      'payload=$payloadBytes mode=${(mode ?? _ChunkMode.steady).name} '
+      'target=$target',
     );
+  }
+}
+
+enum _ChunkMode { interactive, steady, bulk }
+
+class _StreamChunkState {
+  _StreamChunkState(DateTime now) : firstDataAt = now, lastDataAt = now;
+
+  DateTime firstDataAt;
+  DateTime lastDataAt;
+  var frameCount = 0;
+  var totalBytes = 0;
+  _ChunkMode mode = _ChunkMode.interactive;
+
+  void update(int bytes, DateTime now, ChunkTransport transport) {
+    if (now.difference(lastDataAt) >= transport.streamIdleTimeout) {
+      firstDataAt = now;
+      frameCount = 0;
+      totalBytes = 0;
+      mode = _ChunkMode.interactive;
+    }
+    frameCount += 1;
+    totalBytes += bytes;
+    lastDataAt = now;
+    if (totalBytes >= transport.chunkSize) {
+      mode = _ChunkMode.bulk;
+      return;
+    }
+    final interactiveFrames = transport.interactiveFrameLimit <= 0
+        ? false
+        : frameCount <= transport.interactiveFrameLimit;
+    final interactiveTime =
+        transport.interactiveWindow > Duration.zero &&
+        now.difference(firstDataAt) <= transport.interactiveWindow;
+    mode = interactiveFrames || interactiveTime
+        ? _ChunkMode.interactive
+        : _ChunkMode.steady;
   }
 }
 

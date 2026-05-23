@@ -74,6 +74,8 @@ class TcpRelay {
       }
       stream.socket = socket;
       stream.state = _RelayStreamState.open;
+      logger.info('relay connected stream=${frame.streamId} $host:$port');
+      await _sendReady(frame.streamId);
       for (final pending in stream.pendingData) {
         _addToSocket(frame.streamId, stream, pending);
       }
@@ -157,6 +159,17 @@ class TcpRelay {
         streamId: streamId,
         sequenceNumber: chunkTransport.allocateSequence(),
         payload: data,
+      ),
+    );
+  }
+
+  Future<void> _sendReady(int streamId) {
+    return chunkTransport.sendFrame(
+      TunnelFrame.ready(
+        sessionId: chunkTransport.sessionId,
+        direction: Direction.r2c,
+        streamId: streamId,
+        sequenceNumber: chunkTransport.allocateSequence(),
       ),
     );
   }

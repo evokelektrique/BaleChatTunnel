@@ -20,6 +20,8 @@ class Socks5Server {
   ServerSocket? _server;
   final _connections = <Socket>{};
 
+  int get boundPort => _server?.port ?? port;
+
   Future<void> start() async {
     _server = await ServerSocket.bind(host, port);
     _server!.listen((socket) {
@@ -37,7 +39,9 @@ class Socks5Server {
       reader = _SocketReadBuffer(socket);
       await _handshake(reader);
       final request = await _readConnect(reader);
+      logger.info('SOCKS open requested ${request.host}:${request.port}');
       remote = await client.open(request.host, request.port);
+      logger.info('SOCKS connected ${request.host}:${request.port}');
       socket.add([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
       final remoteSub = remote.incoming.listen(
         (data) {

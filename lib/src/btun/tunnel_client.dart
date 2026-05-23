@@ -17,7 +17,11 @@ class BtunClient {
   final _streams = <int, BtunStream>{};
   late final StreamSubscription<TunnelFrame> _sub;
 
-  Future<BtunStream> open(String host, int port) async {
+  Future<BtunStream> open(
+    String host,
+    int port, {
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
     final streamId = _nextStreamId();
     final stream = BtunStream._(
       streamId: streamId,
@@ -38,7 +42,14 @@ class BtunClient {
         port: port,
       ),
     );
-    return stream;
+    try {
+      await stream._ready.future.timeout(timeout);
+      return stream;
+    } on Object {
+      _streams.remove(streamId);
+      await stream.close(localOnly: true);
+      rethrow;
+    }
   }
 
   Future<Uint8List> requestBytes(
@@ -82,10 +93,11 @@ class BtunClient {
       case FrameType.error:
         stream!._error(frame.message ?? 'remote reset');
         _streams.remove(frame.streamId);
+      case FrameType.ready:
+        stream!._markReady();
       case FrameType.open:
       case FrameType.ack:
       case FrameType.hello:
-      case FrameType.ready:
       case FrameType.ping:
       case FrameType.pong:
         break;
@@ -163,6 +175,7 @@ class BtunStream {
   final Future<void> Function(String) _resetRemote;
   final StreamController<List<int>> _incoming =
       StreamController<List<int>>.broadcast();
+  final Completer<void> _ready = Completer<void>();
   var _closed = false;
   var _writeClosed = false;
 
@@ -181,11 +194,15 @@ class BtunStream {
 
   Future<void> reset(String message) => _resetRemote(message);
 
-  Future<void> close() async {
+  Future<void> close({bool localOnly = false}) async {
     if (_closed) return;
     _closed = true;
-    await closeWrite();
+    if (!localOnly) await closeWrite();
     await _incoming.close();
+  }
+
+  void _markReady() {
+    if (!_ready.isCompleted) _ready.complete();
   }
 
   void _add(List<int> bytes) {
@@ -199,7 +216,9 @@ class BtunStream {
 
   void _error(String message) {
     _closed = true;
-    if (!_incoming.isClosed) {
+    final wasReady = _ready.isCompleted;
+    if (!_ready.isCompleted) _ready.completeError(Exception(message));
+    if (wasReady && !_incoming.isClosed) {
       _incoming.addError(Exception(message));
       _incoming.close();
     }

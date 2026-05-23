@@ -57,7 +57,7 @@ const btunTransportPresetSpecs = {
     pollInterval: Duration(milliseconds: 500),
     uploadMinInterval: Duration.zero,
     uploadRateLimitPerMinute: 50,
-    ackFlushInterval: Duration.zero,
+    ackFlushInterval: Duration(milliseconds: 100),
     flushDelay: Duration.zero,
     bulkFlushDelay: Duration(milliseconds: 50),
     bulkChunkSize: 512 * 1024,
