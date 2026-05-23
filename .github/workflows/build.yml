@@ -79,6 +79,27 @@ jobs:
           name: bale-chat-tunnel-desktop-windows-x64
           path: bale-chat-tunnel-desktop-windows-x64.zip
 
+  android-apk:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        run: make pub-get
+      - name: Build Android APK
+        run: make build-android-apk
+      - name: Package Android APK
+        run: cp build/app/outputs/flutter-apk/app-release.apk bale-chat-tunnel-android.apk
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: bale-chat-tunnel-android
+          path: bale-chat-tunnel-android.apk
+
   linux-cli-x64:
     name: Linux CLI x64
     runs-on: ubuntu-latest
@@ -130,6 +151,7 @@ jobs:
       - test
       - linux-app-x64
       - windows-app-x64
+      - android-apk
       - linux-cli-x64
       - windows-cli-x64
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -145,6 +167,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: bale-chat-tunnel-desktop-windows-x64
+          path: release
+      - name: Download Android APK
+        uses: actions/download-artifact@v4
+        with:
+          name: bale-chat-tunnel-android
           path: release
       - name: Download Linux CLI
         uses: actions/download-artifact@v4
@@ -167,6 +194,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             release/bale-chat-tunnel-cli-linux-x64 \
             release/bale-chat-tunnel-cli-windows-x64.exe \
+            release/bale-chat-tunnel-android.apk \
             release/bale-chat-tunnel-desktop-linux-x64.tar.gz \
             release/bale-chat-tunnel-desktop-windows-x64.zip \
             --repo "$GITHUB_REPOSITORY" \

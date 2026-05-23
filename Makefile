@@ -7,7 +7,7 @@ BTUN_WINDOWS_X64 ?= $(BTUN_CLI_DIR)/btun-windows-x64.exe
 .PHONY: help pub-get analyze test test-root analyze-client test-client format-client \
 	bale-login bale-status bale-peers bale-listen bale-logout \
 	btun-login btun-init btun-status btun-client btun-relay btun-http-test \
-	btun-upload-test build-linux-x64 build-windows-x64 \
+	btun-upload-test build-linux-x64 build-windows-x64 build-android-apk \
 	build-cli-linux-x64 build-cli-windows-x64 \
 	check-cli-linux-x64 check-cli-windows-x64
 
@@ -23,6 +23,7 @@ help:
 	@printf '%s\n' '  make format-client    Format bale_client lib/bin/test Dart files.'
 	@printf '%s\n' '  make build-linux-x64  Build the Flutter Linux x64 desktop app.'
 	@printf '%s\n' '  make build-windows-x64 Build the Flutter Windows x64 desktop app.'
+	@printf '%s\n' '  make build-android-apk Build the Flutter Android release APK.'
 	@printf '%s\n' '  make build-cli-linux-x64 Compile the btun CLI for the current Linux x64 runner.'
 	@printf '%s\n' '  make build-cli-windows-x64 Compile the btun CLI for the current Windows x64 runner.'
 	@printf '%s\n' ''
@@ -120,6 +121,9 @@ build-linux-x64:
 build-windows-x64:
 	flutter config --enable-windows-desktop
 	flutter build windows --release
+
+build-android-apk:
+	flutter build apk --release
 
 build-cli-linux-x64:
 	mkdir -p $(BTUN_CLI_DIR)
