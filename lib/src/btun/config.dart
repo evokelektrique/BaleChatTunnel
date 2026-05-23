@@ -52,43 +52,43 @@ const btunTransportPresetSpecs = {
     preset: BtunTransportPreset.interactive,
     label: 'Interactive',
     description: 'Lower latency with higher Bale rate-limit risk.',
-    chunkSize: 512 * 1024,
-    maxInFlight: 1,
-    pollInterval: Duration(milliseconds: 2500),
-    uploadMinInterval: Duration(milliseconds: 1700),
-    uploadRateLimitPerMinute: 35,
-    ackFlushInterval: Duration(milliseconds: 1500),
-    flushDelay: Duration(milliseconds: 300),
-    bulkFlushDelay: Duration(milliseconds: 700),
-    bulkChunkSize: 1024 * 1024,
+    chunkSize: 128 * 1024,
+    maxInFlight: 4,
+    pollInterval: Duration(milliseconds: 1000),
+    uploadMinInterval: Duration(milliseconds: 200),
+    uploadRateLimitPerMinute: 50,
+    ackFlushInterval: Duration(milliseconds: 200),
+    flushDelay: Duration(milliseconds: 50),
+    bulkFlushDelay: Duration(milliseconds: 100),
+    bulkChunkSize: 512 * 1024,
   ),
   BtunTransportPreset.stable: BtunTransportPresetSpec(
     preset: BtunTransportPreset.stable,
     label: 'Stable',
     description: 'Recommended cadence for fewer, larger uploads.',
-    chunkSize: 1024 * 1024,
-    maxInFlight: 1,
-    pollInterval: Duration(milliseconds: 4000),
-    uploadMinInterval: Duration(milliseconds: 2500),
-    uploadRateLimitPerMinute: 25,
-    ackFlushInterval: Duration(milliseconds: 2000),
-    flushDelay: Duration(milliseconds: 800),
-    bulkFlushDelay: Duration(milliseconds: 1000),
-    bulkChunkSize: 2 * 1024 * 1024,
+    chunkSize: 256 * 1024,
+    maxInFlight: 2,
+    pollInterval: Duration(milliseconds: 2000),
+    uploadMinInterval: Duration(milliseconds: 500),
+    uploadRateLimitPerMinute: 35,
+    ackFlushInterval: Duration(milliseconds: 500),
+    flushDelay: Duration(milliseconds: 100),
+    bulkFlushDelay: Duration(milliseconds: 250),
+    bulkChunkSize: 1024 * 1024,
   ),
   BtunTransportPreset.resilient: BtunTransportPresetSpec(
     preset: BtunTransportPreset.resilient,
     label: 'Resilient',
     description: 'Safest cadence with the fewest regular uploads.',
-    chunkSize: 2 * 1024 * 1024,
+    chunkSize: 512 * 1024,
     maxInFlight: 1,
-    pollInterval: Duration(milliseconds: 6000),
-    uploadMinInterval: Duration(milliseconds: 3500),
-    uploadRateLimitPerMinute: 15,
-    ackFlushInterval: Duration(milliseconds: 3000),
-    flushDelay: Duration(milliseconds: 1500),
-    bulkFlushDelay: Duration(milliseconds: 2000),
-    bulkChunkSize: 4 * 1024 * 1024,
+    pollInterval: Duration(milliseconds: 3000),
+    uploadMinInterval: Duration(milliseconds: 1000),
+    uploadRateLimitPerMinute: 20,
+    ackFlushInterval: Duration(milliseconds: 1000),
+    flushDelay: Duration(milliseconds: 200),
+    bulkFlushDelay: Duration(milliseconds: 500),
+    bulkChunkSize: 2 * 1024 * 1024,
   ),
 };
 
@@ -214,6 +214,7 @@ class BtunConfig {
   }
 
   static BtunConfig fromJson(Map<String, Object?> json) {
+    final stable = btunTransportPresetSpecs[BtunTransportPreset.stable]!;
     final relay = json['relay'] is Map<String, Object?>
         ? json['relay']! as Map<String, Object?>
         : const <String, Object?>{};
@@ -239,9 +240,11 @@ class BtunConfig {
       peerPublicKey: json['peer_public_key'] as String?,
       socksHost: json['socks_host'] as String? ?? '127.0.0.1',
       socksPort: json['socks_port'] as int? ?? 1080,
-      chunkSize: configuredChunkSize ?? 1024 * 1024,
-      maxInFlight: json['max_in_flight'] as int? ?? 1,
-      pollInterval: Duration(milliseconds: configuredPollMs ?? 4000),
+      chunkSize: configuredChunkSize ?? stable.chunkSize,
+      maxInFlight: json['max_in_flight'] as int? ?? stable.maxInFlight,
+      pollInterval: Duration(
+        milliseconds: configuredPollMs ?? stable.pollInterval.inMilliseconds,
+      ),
       retryTimeout: Duration(
         milliseconds:
             configuredRetryMs == null ||
@@ -251,18 +254,27 @@ class BtunConfig {
             : configuredRetryMs,
       ),
       uploadMinInterval: Duration(
-        milliseconds: configuredUploadIntervalMs ?? 2500,
+        milliseconds:
+            configuredUploadIntervalMs ??
+            stable.uploadMinInterval.inMilliseconds,
       ),
       uploadRateLimitPerMinute:
           configuredUploadRateLimit == null || configuredUploadRateLimit == 45
-          ? 25
+          ? stable.uploadRateLimitPerMinute
           : configuredUploadRateLimit,
-      ackFlushInterval: Duration(milliseconds: configuredAckFlushMs ?? 2000),
-      flushDelay: Duration(milliseconds: configuredFlushDelayMs ?? 800),
-      bulkFlushDelay: Duration(
-        milliseconds: configuredBulkFlushDelayMs ?? 1000,
+      ackFlushInterval: Duration(
+        milliseconds:
+            configuredAckFlushMs ?? stable.ackFlushInterval.inMilliseconds,
       ),
-      bulkChunkSize: configuredBulkChunkSize ?? 2 * 1024 * 1024,
+      flushDelay: Duration(
+        milliseconds:
+            configuredFlushDelayMs ?? stable.flushDelay.inMilliseconds,
+      ),
+      bulkFlushDelay: Duration(
+        milliseconds:
+            configuredBulkFlushDelayMs ?? stable.bulkFlushDelay.inMilliseconds,
+      ),
+      bulkChunkSize: configuredBulkChunkSize ?? stable.bulkChunkSize,
       transportPreset: _transportPreset(json['transport_preset'] as String?),
       maxRetryChunks: configuredMaxRetryChunks ?? 64,
       maxRetryBytes: configuredMaxRetryBytes ?? 64 * 1024 * 1024,
