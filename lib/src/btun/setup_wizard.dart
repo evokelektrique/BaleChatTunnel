@@ -140,84 +140,108 @@ class BtunSetupWizard {
 
     writeln('');
     writeln('Transport/performance');
-    final chunkSize = await promptInt(
-      'Chunk size bytes',
-      defaultValue: defaults.chunkSize,
-      min: 1024,
-      help: 'Maximum payload size for regular tunnel chunks.',
+    final transportPreset = await promptTransportPreset(
+      'Stability preset',
+      defaultValue: defaults.transportPreset,
+      help:
+          'interactive favors latency. stable is recommended for fewer, '
+          'larger uploads. resilient uses the safest upload cadence. custom '
+          'lets you edit every transport value manually.',
     );
-    final bulkChunkSize = await promptInt(
-      'Bulk chunk size bytes',
-      defaultValue: defaults.bulkChunkSize,
-      min: 1024,
-      help: 'Maximum payload size for larger queued chunks.',
-    );
-    final maxInFlight = await promptInt(
-      'Max in-flight uploads',
-      defaultValue: defaults.maxInFlight,
-      min: 1,
-      help: 'Maximum concurrent Saved Messages uploads.',
-    );
-    final pollMs = await promptInt(
-      'Poll interval ms',
-      defaultValue: defaults.pollInterval.inMilliseconds,
-      min: 100,
-      help: 'How often to poll Saved Messages when updates are quiet.',
-    );
-    final retryMs = await promptInt(
-      'Retry timeout ms',
-      defaultValue: defaults.retryTimeout.inMilliseconds,
-      min: 1000,
-      help: 'How long to wait before retrying unacknowledged chunks.',
-    );
-    final uploadMinMs = await promptInt(
-      'Upload min interval ms',
-      defaultValue: defaults.uploadMinInterval.inMilliseconds,
-      min: 0,
-      help: 'Minimum spacing between uploads. Use 0 for no fixed delay.',
-    );
-    final uploadRate = await promptInt(
-      'Upload rate limit per minute',
-      defaultValue: defaults.uploadRateLimitPerMinute,
-      min: 1,
-      help: 'Maximum upload attempts per minute.',
-    );
-    final ackMs = await promptInt(
-      'ACK flush delay ms',
-      defaultValue: defaults.ackFlushInterval.inMilliseconds,
-      min: 0,
-      help: 'Delay used to batch acknowledgements before sending.',
-    );
-    final flushMs = await promptInt(
-      'Flush delay ms',
-      defaultValue: defaults.flushDelay.inMilliseconds,
-      min: 0,
-      help: 'Delay used to batch ordinary frames before upload.',
-    );
-    final bulkFlushMs = await promptInt(
-      'Bulk flush delay ms',
-      defaultValue: defaults.bulkFlushDelay.inMilliseconds,
-      min: 0,
-      help: 'Delay used to batch larger transfer frames before upload.',
-    );
-    final maxRetryChunks = await promptInt(
-      'Max retry chunks',
-      defaultValue: defaults.maxRetryChunks,
-      min: 0,
-      help: 'Maximum number of chunks retained for retry.',
-    );
-    final maxRetryBytes = await promptInt(
-      'Max retry bytes',
-      defaultValue: defaults.maxRetryBytes,
-      min: 0,
-      help: 'Maximum total bytes retained for retry.',
-    );
-    final maxStreams = await promptInt(
-      'Max streams',
-      defaultValue: defaults.maxStreams,
-      min: 1,
-      help: 'Maximum concurrent tunnel streams.',
-    );
+    final performanceDefaults = defaults.applyTransportPreset(transportPreset);
+    var chunkSize = performanceDefaults.chunkSize;
+    var bulkChunkSize = performanceDefaults.bulkChunkSize;
+    var maxInFlight = performanceDefaults.maxInFlight;
+    var pollMs = performanceDefaults.pollInterval.inMilliseconds;
+    var retryMs = performanceDefaults.retryTimeout.inMilliseconds;
+    var uploadMinMs = performanceDefaults.uploadMinInterval.inMilliseconds;
+    var uploadRate = performanceDefaults.uploadRateLimitPerMinute;
+    var ackMs = performanceDefaults.ackFlushInterval.inMilliseconds;
+    var flushMs = performanceDefaults.flushDelay.inMilliseconds;
+    var bulkFlushMs = performanceDefaults.bulkFlushDelay.inMilliseconds;
+    var maxRetryChunks = performanceDefaults.maxRetryChunks;
+    var maxRetryBytes = performanceDefaults.maxRetryBytes;
+    var maxStreams = performanceDefaults.maxStreams;
+    if (transportPreset == BtunTransportPreset.custom) {
+      chunkSize = await promptInt(
+        'Chunk size bytes',
+        defaultValue: defaults.chunkSize,
+        min: 1024,
+        help: 'Maximum payload size for regular tunnel chunks.',
+      );
+      bulkChunkSize = await promptInt(
+        'Bulk chunk size bytes',
+        defaultValue: defaults.bulkChunkSize,
+        min: 1024,
+        help: 'Maximum payload size for larger queued chunks.',
+      );
+      maxInFlight = await promptInt(
+        'Max in-flight uploads',
+        defaultValue: defaults.maxInFlight,
+        min: 1,
+        help: 'Maximum concurrent Saved Messages uploads.',
+      );
+      pollMs = await promptInt(
+        'Poll interval ms',
+        defaultValue: defaults.pollInterval.inMilliseconds,
+        min: 100,
+        help: 'How often to poll Saved Messages when updates are quiet.',
+      );
+      retryMs = await promptInt(
+        'Retry timeout ms',
+        defaultValue: defaults.retryTimeout.inMilliseconds,
+        min: 1000,
+        help: 'How long to wait before retrying unacknowledged chunks.',
+      );
+      uploadMinMs = await promptInt(
+        'Upload min interval ms',
+        defaultValue: defaults.uploadMinInterval.inMilliseconds,
+        min: 0,
+        help: 'Minimum spacing between uploads. Use 0 for no fixed delay.',
+      );
+      uploadRate = await promptInt(
+        'Upload rate limit per minute',
+        defaultValue: defaults.uploadRateLimitPerMinute,
+        min: 1,
+        help: 'Maximum upload attempts per minute.',
+      );
+      ackMs = await promptInt(
+        'ACK flush delay ms',
+        defaultValue: defaults.ackFlushInterval.inMilliseconds,
+        min: 0,
+        help: 'Delay used to batch acknowledgements before sending.',
+      );
+      flushMs = await promptInt(
+        'Flush delay ms',
+        defaultValue: defaults.flushDelay.inMilliseconds,
+        min: 0,
+        help: 'Delay used to batch ordinary frames before upload.',
+      );
+      bulkFlushMs = await promptInt(
+        'Bulk flush delay ms',
+        defaultValue: defaults.bulkFlushDelay.inMilliseconds,
+        min: 0,
+        help: 'Delay used to batch larger transfer frames before upload.',
+      );
+      maxRetryChunks = await promptInt(
+        'Max retry chunks',
+        defaultValue: defaults.maxRetryChunks,
+        min: 0,
+        help: 'Maximum number of chunks retained for retry.',
+      );
+      maxRetryBytes = await promptInt(
+        'Max retry bytes',
+        defaultValue: defaults.maxRetryBytes,
+        min: 0,
+        help: 'Maximum total bytes retained for retry.',
+      );
+      maxStreams = await promptInt(
+        'Max streams',
+        defaultValue: defaults.maxStreams,
+        min: 1,
+        help: 'Maximum concurrent tunnel streams.',
+      );
+    }
 
     var allowPorts = defaults.allowPorts;
     var blockPrivateIps = defaults.blockPrivateIps;
@@ -276,6 +300,7 @@ class BtunSetupWizard {
       ackFlushInterval: Duration(milliseconds: ackMs),
       flushDelay: Duration(milliseconds: flushMs),
       bulkFlushDelay: Duration(milliseconds: bulkFlushMs),
+      transportPreset: transportPreset,
       maxRetryChunks: maxRetryChunks,
       maxRetryBytes: maxRetryBytes,
       maxStreams: maxStreams,
@@ -384,6 +409,19 @@ class BtunSetupWizard {
     );
   }
 
+  Future<BtunTransportPreset> promptTransportPreset(
+    String label, {
+    required BtunTransportPreset defaultValue,
+    String? help,
+  }) {
+    return _prompt<BtunTransportPreset>(
+      label,
+      defaultText: defaultValue.name,
+      help: help,
+      parse: (input) => parseTransportPreset(input, defaultValue: defaultValue),
+    );
+  }
+
   Future<bool> promptBool(
     String label, {
     required bool defaultValue,
@@ -456,6 +494,33 @@ bool parseBool(String input, {required bool defaultValue}) {
   if (value == 'y' || value == 'yes' || value == 'true') return true;
   if (value == 'n' || value == 'no' || value == 'false') return false;
   throw const FormatException('enter y/n, yes/no, or true/false');
+}
+
+BtunTransportPreset parseTransportPreset(
+  String input, {
+  required BtunTransportPreset defaultValue,
+}) {
+  final value = input.trim().toLowerCase();
+  if (value.isEmpty) return defaultValue;
+  return switch (value) {
+    'interactive' ||
+    'i' ||
+    'responsive' ||
+    'fast' => BtunTransportPreset.interactive,
+    'stable' ||
+    's' ||
+    'balanced' ||
+    'balance' ||
+    'medium' => BtunTransportPreset.stable,
+    'resilient' ||
+    'r' ||
+    'conservative' ||
+    'slow' => BtunTransportPreset.resilient,
+    'custom' => BtunTransportPreset.custom,
+    _ => throw const FormatException(
+      'enter one of: interactive, stable, resilient, custom',
+    ),
+  };
 }
 
 int parseInt(String input, {required int defaultValue, int? min, int? max}) {

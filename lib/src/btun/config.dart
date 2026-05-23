@@ -4,6 +4,94 @@ import 'dart:math';
 
 enum BtunRole { client, relay }
 
+enum BtunTransportPreset { interactive, stable, resilient, custom }
+
+class BtunTransportPresetSpec {
+  const BtunTransportPresetSpec({
+    required this.preset,
+    required this.label,
+    required this.description,
+    required this.chunkSize,
+    required this.maxInFlight,
+    required this.pollInterval,
+    required this.uploadMinInterval,
+    required this.uploadRateLimitPerMinute,
+    required this.ackFlushInterval,
+    required this.flushDelay,
+    required this.bulkFlushDelay,
+    required this.bulkChunkSize,
+  });
+
+  final BtunTransportPreset preset;
+  final String label;
+  final String description;
+  final int chunkSize;
+  final int maxInFlight;
+  final Duration pollInterval;
+  final Duration uploadMinInterval;
+  final int uploadRateLimitPerMinute;
+  final Duration ackFlushInterval;
+  final Duration flushDelay;
+  final Duration bulkFlushDelay;
+  final int bulkChunkSize;
+
+  bool matches(BtunConfig config) =>
+      config.chunkSize == chunkSize &&
+      config.maxInFlight == maxInFlight &&
+      config.pollInterval == pollInterval &&
+      config.uploadMinInterval == uploadMinInterval &&
+      config.uploadRateLimitPerMinute == uploadRateLimitPerMinute &&
+      config.ackFlushInterval == ackFlushInterval &&
+      config.flushDelay == flushDelay &&
+      config.bulkFlushDelay == bulkFlushDelay &&
+      config.bulkChunkSize == bulkChunkSize;
+}
+
+const btunTransportPresetSpecs = {
+  BtunTransportPreset.interactive: BtunTransportPresetSpec(
+    preset: BtunTransportPreset.interactive,
+    label: 'Interactive',
+    description: 'Lower latency with higher Bale rate-limit risk.',
+    chunkSize: 512 * 1024,
+    maxInFlight: 1,
+    pollInterval: Duration(milliseconds: 2500),
+    uploadMinInterval: Duration(milliseconds: 1700),
+    uploadRateLimitPerMinute: 35,
+    ackFlushInterval: Duration(milliseconds: 1500),
+    flushDelay: Duration(milliseconds: 300),
+    bulkFlushDelay: Duration(milliseconds: 700),
+    bulkChunkSize: 1024 * 1024,
+  ),
+  BtunTransportPreset.stable: BtunTransportPresetSpec(
+    preset: BtunTransportPreset.stable,
+    label: 'Stable',
+    description: 'Recommended cadence for fewer, larger uploads.',
+    chunkSize: 1024 * 1024,
+    maxInFlight: 1,
+    pollInterval: Duration(milliseconds: 4000),
+    uploadMinInterval: Duration(milliseconds: 2500),
+    uploadRateLimitPerMinute: 25,
+    ackFlushInterval: Duration(milliseconds: 2000),
+    flushDelay: Duration(milliseconds: 800),
+    bulkFlushDelay: Duration(milliseconds: 1000),
+    bulkChunkSize: 2 * 1024 * 1024,
+  ),
+  BtunTransportPreset.resilient: BtunTransportPresetSpec(
+    preset: BtunTransportPreset.resilient,
+    label: 'Resilient',
+    description: 'Safest cadence with the fewest regular uploads.',
+    chunkSize: 2 * 1024 * 1024,
+    maxInFlight: 1,
+    pollInterval: Duration(milliseconds: 6000),
+    uploadMinInterval: Duration(milliseconds: 3500),
+    uploadRateLimitPerMinute: 15,
+    ackFlushInterval: Duration(milliseconds: 3000),
+    flushDelay: Duration(milliseconds: 1500),
+    bulkFlushDelay: Duration(milliseconds: 2000),
+    bulkChunkSize: 4 * 1024 * 1024,
+  ),
+};
+
 class BtunConfig {
   const BtunConfig({
     required this.role,
@@ -25,6 +113,7 @@ class BtunConfig {
     required this.flushDelay,
     required this.bulkFlushDelay,
     required this.bulkChunkSize,
+    required this.transportPreset,
     required this.maxRetryChunks,
     required this.maxRetryBytes,
     required this.maxStreams,
@@ -52,6 +141,7 @@ class BtunConfig {
   final Duration flushDelay;
   final Duration bulkFlushDelay;
   final int bulkChunkSize;
+  final BtunTransportPreset transportPreset;
   final int maxRetryChunks;
   final int maxRetryBytes;
   final int maxStreams;
@@ -67,33 +157,37 @@ class BtunConfig {
   static String defaultDatabasePath(String profileDir) =>
       '$profileDir/state.json';
 
-  static BtunConfig defaults({String profileDir = '.btun'}) => BtunConfig(
-    role: BtunRole.client,
-    sessionFile: defaultSessionPath(profileDir),
-    database: defaultDatabasePath(profileDir),
-    sessionId: randomSessionId(),
-    localPublicKey: '',
-    localPrivateKey: '',
-    peerPublicKey: null,
-    socksHost: '127.0.0.1',
-    socksPort: 1080,
-    chunkSize: 262144,
-    maxInFlight: 2,
-    pollInterval: const Duration(milliseconds: 3000),
-    retryTimeout: const Duration(milliseconds: 120000),
-    uploadMinInterval: Duration.zero,
-    uploadRateLimitPerMinute: 40,
-    ackFlushInterval: const Duration(milliseconds: 1000),
-    flushDelay: const Duration(milliseconds: 100),
-    bulkFlushDelay: const Duration(milliseconds: 250),
-    bulkChunkSize: 524288,
-    maxRetryChunks: 64,
-    maxRetryBytes: 64 * 1024 * 1024,
-    maxStreams: 4,
-    allowPorts: const [80, 443],
-    blockPrivateIps: true,
-    dnsOnRelay: true,
-  );
+  static BtunConfig defaults({String profileDir = '.btun'}) {
+    final preset = btunTransportPresetSpecs[BtunTransportPreset.stable]!;
+    return BtunConfig(
+      role: BtunRole.client,
+      sessionFile: defaultSessionPath(profileDir),
+      database: defaultDatabasePath(profileDir),
+      sessionId: randomSessionId(),
+      localPublicKey: '',
+      localPrivateKey: '',
+      peerPublicKey: null,
+      socksHost: '127.0.0.1',
+      socksPort: 1080,
+      chunkSize: preset.chunkSize,
+      maxInFlight: preset.maxInFlight,
+      pollInterval: preset.pollInterval,
+      retryTimeout: const Duration(milliseconds: 120000),
+      uploadMinInterval: preset.uploadMinInterval,
+      uploadRateLimitPerMinute: preset.uploadRateLimitPerMinute,
+      ackFlushInterval: preset.ackFlushInterval,
+      flushDelay: preset.flushDelay,
+      bulkFlushDelay: preset.bulkFlushDelay,
+      bulkChunkSize: preset.bulkChunkSize,
+      transportPreset: BtunTransportPreset.stable,
+      maxRetryChunks: 64,
+      maxRetryBytes: 64 * 1024 * 1024,
+      maxStreams: 4,
+      allowPorts: const [80, 443],
+      blockPrivateIps: true,
+      dnsOnRelay: true,
+    );
+  }
 
   static String randomSessionId() {
     final random = Random.secure();
@@ -135,7 +229,7 @@ class BtunConfig {
     final configuredBulkChunkSize = json['bulk_chunk_size'] as int?;
     final configuredMaxRetryChunks = json['max_retry_chunks'] as int?;
     final configuredMaxRetryBytes = json['max_retry_bytes'] as int?;
-    return BtunConfig(
+    final config = BtunConfig(
       role: _role(json['role'] as String? ?? 'client'),
       sessionFile: json['session_file'] as String,
       database: json['database'] as String,
@@ -145,23 +239,9 @@ class BtunConfig {
       peerPublicKey: json['peer_public_key'] as String?,
       socksHost: json['socks_host'] as String? ?? '127.0.0.1',
       socksPort: json['socks_port'] as int? ?? 1080,
-      chunkSize:
-          configuredChunkSize == null ||
-              configuredChunkSize == 65536 ||
-              configuredChunkSize == 131072 ||
-              configuredChunkSize == 524288
-          ? 262144
-          : configuredChunkSize,
-      maxInFlight: json['max_in_flight'] as int? ?? 2,
-      pollInterval: Duration(
-        milliseconds:
-            configuredPollMs == null ||
-                configuredPollMs == 1000 ||
-                configuredPollMs == 5000 ||
-                configuredPollMs == 10000
-            ? 3000
-            : configuredPollMs,
-      ),
+      chunkSize: configuredChunkSize ?? 1024 * 1024,
+      maxInFlight: json['max_in_flight'] as int? ?? 1,
+      pollInterval: Duration(milliseconds: configuredPollMs ?? 4000),
       retryTimeout: Duration(
         milliseconds:
             configuredRetryMs == null ||
@@ -171,33 +251,19 @@ class BtunConfig {
             : configuredRetryMs,
       ),
       uploadMinInterval: Duration(
-        milliseconds:
-            configuredUploadIntervalMs == null ||
-                configuredUploadIntervalMs == 15000
-            ? 0
-            : configuredUploadIntervalMs,
+        milliseconds: configuredUploadIntervalMs ?? 2500,
       ),
       uploadRateLimitPerMinute:
           configuredUploadRateLimit == null || configuredUploadRateLimit == 45
-          ? 40
+          ? 25
           : configuredUploadRateLimit,
-      ackFlushInterval: Duration(
-        milliseconds:
-            configuredAckFlushMs == null || configuredAckFlushMs == 5000
-            ? 1000
-            : configuredAckFlushMs,
+      ackFlushInterval: Duration(milliseconds: configuredAckFlushMs ?? 2000),
+      flushDelay: Duration(milliseconds: configuredFlushDelayMs ?? 800),
+      bulkFlushDelay: Duration(
+        milliseconds: configuredBulkFlushDelayMs ?? 1000,
       ),
-      flushDelay: Duration(
-        milliseconds:
-            configuredFlushDelayMs == null ||
-                configuredFlushDelayMs == 750 ||
-                configuredFlushDelayMs == 1000 ||
-                configuredFlushDelayMs == 1500
-            ? 100
-            : configuredFlushDelayMs,
-      ),
-      bulkFlushDelay: Duration(milliseconds: configuredBulkFlushDelayMs ?? 250),
-      bulkChunkSize: configuredBulkChunkSize ?? 524288,
+      bulkChunkSize: configuredBulkChunkSize ?? 2 * 1024 * 1024,
+      transportPreset: _transportPreset(json['transport_preset'] as String?),
       maxRetryChunks: configuredMaxRetryChunks ?? 64,
       maxRetryBytes: configuredMaxRetryBytes ?? 64 * 1024 * 1024,
       maxStreams: json['max_streams'] as int? ?? 4,
@@ -208,6 +274,7 @@ class BtunConfig {
       blockPrivateIps: relay['block_private_ips'] as bool? ?? true,
       dnsOnRelay: relay['dns_on_relay'] as bool? ?? true,
     );
+    return config.copyWith(transportPreset: _detectTransportPreset(config));
   }
 
   Future<void> save(String path) async {
@@ -216,7 +283,7 @@ class BtunConfig {
     await file.writeAsString(
       const JsonEncoder.withIndent('  ').convert(toJson()),
     );
-    if (!Platform.isWindows) {
+    if (!Platform.isWindows && !Platform.isAndroid) {
       await Process.run('chmod', ['600', file.path]);
     }
   }
@@ -241,6 +308,7 @@ class BtunConfig {
     'flush_delay_ms': flushDelay.inMilliseconds,
     'bulk_flush_delay_ms': bulkFlushDelay.inMilliseconds,
     'bulk_chunk_size': bulkChunkSize,
+    'transport_preset': _detectTransportPreset(this).name,
     'max_retry_chunks': maxRetryChunks,
     'max_retry_bytes': maxRetryBytes,
     'max_streams': maxStreams,
@@ -271,6 +339,7 @@ class BtunConfig {
     Duration? flushDelay,
     Duration? bulkFlushDelay,
     int? bulkChunkSize,
+    BtunTransportPreset? transportPreset,
     int? maxRetryChunks,
     int? maxRetryBytes,
     int? maxStreams,
@@ -298,6 +367,7 @@ class BtunConfig {
     flushDelay: flushDelay ?? this.flushDelay,
     bulkFlushDelay: bulkFlushDelay ?? this.bulkFlushDelay,
     bulkChunkSize: bulkChunkSize ?? this.bulkChunkSize,
+    transportPreset: transportPreset ?? this.transportPreset,
     maxRetryChunks: maxRetryChunks ?? this.maxRetryChunks,
     maxRetryBytes: maxRetryBytes ?? this.maxRetryBytes,
     maxStreams: maxStreams ?? this.maxStreams,
@@ -310,4 +380,36 @@ class BtunConfig {
     'relay' => BtunRole.relay,
     _ => BtunRole.client,
   };
+
+  static BtunTransportPreset _transportPreset(String? value) =>
+      BtunTransportPreset.values.firstWhere(
+        (preset) => preset.name == value,
+        orElse: () => BtunTransportPreset.custom,
+      );
+
+  static BtunTransportPreset _detectTransportPreset(BtunConfig config) {
+    for (final entry in btunTransportPresetSpecs.entries) {
+      if (entry.value.matches(config)) return entry.key;
+    }
+    return BtunTransportPreset.custom;
+  }
+
+  BtunConfig applyTransportPreset(BtunTransportPreset preset) {
+    final spec = btunTransportPresetSpecs[preset];
+    if (spec == null) {
+      return copyWith(transportPreset: BtunTransportPreset.custom);
+    }
+    return copyWith(
+      chunkSize: spec.chunkSize,
+      maxInFlight: spec.maxInFlight,
+      pollInterval: spec.pollInterval,
+      uploadMinInterval: spec.uploadMinInterval,
+      uploadRateLimitPerMinute: spec.uploadRateLimitPerMinute,
+      ackFlushInterval: spec.ackFlushInterval,
+      flushDelay: spec.flushDelay,
+      bulkFlushDelay: spec.bulkFlushDelay,
+      bulkChunkSize: spec.bulkChunkSize,
+      transportPreset: preset,
+    );
+  }
 }

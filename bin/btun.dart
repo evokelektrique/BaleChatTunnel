@@ -281,7 +281,7 @@ class BtunCli {
         _value('client-public-key') ??
         _value('relay-public-key') ??
         existing?.peerPublicKey;
-    final config = (existing ?? BtunConfig.defaults(profileDir: profile))
+    var config = (existing ?? BtunConfig.defaults(profileDir: profile))
         .copyWith(
           sessionFile: sessionFile,
           sessionId: sessionId,
@@ -289,6 +289,10 @@ class BtunCli {
           localPrivateKey: localKeys.privateKey,
           peerPublicKey: peerPublicKey,
         );
+    final transportPreset = _transportPresetValue('transport-preset');
+    if (transportPreset != null) {
+      config = config.applyTransportPreset(transportPreset);
+    }
     await config.save(configPath);
     stdout.writeln('Wrote $configPath');
     stdout.writeln('session_id: ${config.sessionId}');
@@ -311,6 +315,7 @@ class BtunCli {
       '${_peerStatusLabel(config.role)}: ${config.peerPublicKey ?? '<not set>'}',
     );
     stdout.writeln('socks: ${config.socksHost}:${config.socksPort}');
+    stdout.writeln('transport_preset: ${config.transportPreset.name}');
     stdout.writeln('chunk_size: ${config.chunkSize}');
     stdout.writeln('poll_interval_ms: ${config.pollInterval.inMilliseconds}');
     stdout.writeln('retry_timeout_ms: ${config.retryTimeout.inMilliseconds}');
@@ -733,6 +738,17 @@ class BtunCli {
     return null;
   }
 
+  BtunTransportPreset? _transportPresetValue(String name) {
+    final value = _value(name);
+    if (value == null) return null;
+    for (final preset in BtunTransportPreset.values) {
+      if (preset.name == value.trim().toLowerCase()) return preset;
+    }
+    throw FormatException(
+      'invalid --$name: enter one of interactive, stable, resilient, custom',
+    );
+  }
+
   String _localKeyLabel(BtunRole role) => switch (role) {
     BtunRole.client => 'client_public_key',
     BtunRole.relay => 'relay_public_key',
@@ -785,6 +801,7 @@ Options:
   --config <path>          Default: <profile>/config.json
   --session <path>         Default: <profile>/session.json
   --session-id <id>        Override session id
+  --transport-preset <p>   interactive, stable, resilient, or custom
   --upload-delay-ms <n>    upload-test delay between files. Default: 1000
   --retries <n>            upload-test retries per file. Default: 1
   --peer-public-key <key>  Public key from the other side

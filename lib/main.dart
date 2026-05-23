@@ -6,13 +6,27 @@ import 'package:bale_chat_tunnel/btun.dart';
 import 'package:bale_client/bale_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 const appTitle = 'Bale Chat Tunnel';
-const appPackageName = 'io.github.evokelektrique.bale_chat_tunnel';
 const appVersionLabel = '0.1.0';
+const appRepositoryUrl = 'https://github.com/evokelektrique/BaleChatTunnel';
 
-void main() {
-  runApp(BtunApp(controller: BtunAppController()..load()));
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final controller = BtunAppController(
+    profileDir: await defaultGuiProfileDir(),
+  );
+  runApp(BtunApp(controller: controller..load()));
+}
+
+Future<String> defaultGuiProfileDir() async {
+  if (Platform.isAndroid) {
+    final directory = await getApplicationSupportDirectory();
+    return directory.path;
+  }
+  return BtunConfig.defaultProfileDir();
 }
 
 class BtunApp extends StatelessWidget {
@@ -146,14 +160,15 @@ class UiLogger extends Logger {
 }
 
 class BtunAppController extends ChangeNotifier {
-  BtunAppController({this.persistPrefs = true});
+  BtunAppController({this.persistPrefs = true, String? profileDir})
+    : profileDir = profileDir ?? BtunConfig.defaultProfileDir();
 
   final bool persistPrefs;
 
   var page = BtunPage.home;
   var status = RuntimeStatus.loading;
   var themeMode = ThemeMode.system;
-  var profileDir = BtunConfig.defaultProfileDir();
+  String profileDir;
   BtunConfig? config;
   BaleSession? session;
   String? error;
@@ -242,6 +257,7 @@ class BtunAppController extends ChangeNotifier {
     int? chunkSize,
     int? pollMs,
     int? uploadRateLimit,
+    BtunTransportPreset? transportPreset,
   }) async {
     await _guard(() async {
       final current = config ?? BtunConfig.defaults(profileDir: profileDir);
@@ -250,7 +266,10 @@ class BtunAppController extends ChangeNotifier {
           sessionId.trim() != current.sessionId) {
         throw Exception('Stop the client before changing the session name.');
       }
-      final next = current.copyWith(
+      final base = transportPreset == null
+          ? current
+          : current.applyTransportPreset(transportPreset);
+      final next = base.copyWith(
         role: BtunRole.client,
         sessionFile: sessionPath,
         database: BtunConfig.defaultDatabasePath(profileDir),
@@ -266,6 +285,7 @@ class BtunAppController extends ChangeNotifier {
         chunkSize: chunkSize,
         pollInterval: pollMs == null ? null : Duration(milliseconds: pollMs),
         uploadRateLimitPerMinute: uploadRateLimit,
+        transportPreset: transportPreset,
       );
       await next.save(configPath);
       config = next;
@@ -618,12 +638,7 @@ class ConnectionControl extends StatelessWidget {
         controller.isLoggedIn &&
         controller.hasPeerKey;
     final loginPrompt = !busy && !running && !controller.isLoggedIn;
-    final enabled = !busy && (running || ready);
-    final color = running
-        ? Colors.green
-        : !enabled
-        ? scheme.outline
-        : scheme.primary;
+    final color = running ? Colors.green : scheme.outline;
     final label = switch (controller.status) {
       RuntimeStatus.running => 'Connected',
       RuntimeStatus.loading => 'Connecting',
@@ -657,29 +672,11 @@ class ConnectionControl extends StatelessWidget {
                 height: 190,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  gradient: RadialGradient(
-                    colors: [
-                      color.withValues(alpha: running ? 0.24 : 0.13),
-                      color.withValues(alpha: running ? 0.10 : 0.05),
-                    ],
-                  ),
+                  color: color.withValues(alpha: running ? 0.14 : 0.06),
                   border: Border.all(
                     color: color.withValues(alpha: running ? 0.80 : 0.48),
                     width: running ? 3 : 2,
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: color.withValues(
-                        alpha: enabled
-                            ? running
-                                  ? 0.26
-                                  : 0.10
-                            : 0.04,
-                      ),
-                      blurRadius: running ? 52 : 32,
-                      spreadRadius: running ? 5 : 1,
-                    ),
-                  ],
                 ),
                 child: Stack(
                   alignment: Alignment.center,
@@ -693,7 +690,11 @@ class ConnectionControl extends StatelessWidget {
                           strokeWidth: 3,
                         ),
                       ),
-                    Icon(Icons.power_settings_new, color: color, size: 68),
+                    Icon(
+                      Icons.power_settings_new_outlined,
+                      color: color,
+                      size: 62,
+                    ),
                   ],
                 ),
               ),
@@ -750,7 +751,7 @@ class SetupStatusList extends StatelessWidget {
       ),
     ];
     final list = SizedBox(
-      width: centered ? 250 : double.infinity,
+      width: centered ? 300 : double.infinity,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -758,7 +759,14 @@ class SetupStatusList extends StatelessWidget {
         ],
       ),
     );
-    return centered ? Center(child: list) : list;
+    return centered
+        ? Center(
+            child: Padding(
+              padding: const EdgeInsets.only(left: 42),
+              child: list,
+            ),
+          )
+        : list;
   }
 }
 
@@ -801,18 +809,21 @@ class _CheckRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         children: [
-          _StatusDot(done: step.done),
-          const SizedBox(width: 12),
           SizedBox(
-            width: compact ? 84 : 86,
+            width: compact ? 26 : 10,
+            child: Center(child: _StatusDot(done: step.done)),
+          ),
+          SizedBox(width: compact ? 10 : 12),
+          SizedBox(
+            width: compact ? 92 : 86,
             child: Text(
               step.title,
               style: Theme.of(context).textTheme.bodyMedium,
             ),
           ),
-          const SizedBox(width: 10),
+          SizedBox(width: compact ? 18 : 10),
           SizedBox(
-            width: compact ? 112 : null,
+            width: compact ? 124 : null,
             child: Text(
               step.help,
               maxLines: 1,
@@ -841,7 +852,7 @@ class ExchangePanel extends StatelessWidget {
         : 'btun client setup\nsession_id: ${config!.sessionId}\nclient_public_key: ${config!.localPublicKey}';
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -858,10 +869,7 @@ class ExchangePanel extends StatelessWidget {
                       icon: const Icon(Icons.copy),
                     ),
             ),
-            const SizedBox(height: 10),
-            SetupStatusList(controller: controller),
-            const SizedBox(height: 8),
-            InfoLine(label: 'Profile', value: controller.profileDir),
+            const SizedBox(height: 6),
             InfoLine(
               label: 'Session ID',
               value: config?.sessionId ?? 'Initialize config first',
@@ -871,10 +879,6 @@ class ExchangePanel extends StatelessWidget {
               label: 'Client public key',
               value: config?.localPublicKey ?? 'Initialize config first',
               copyValue: config?.localPublicKey,
-            ),
-            InfoLine(
-              label: 'Need from relay',
-              value: controller.hasPeerKey ? 'Configured' : 'Relay public key',
             ),
           ],
         ),
@@ -984,6 +988,7 @@ class _SettingsTabState extends State<SettingsTab> {
   late final TextEditingController chunkSize;
   late final TextEditingController pollMs;
   late final TextEditingController uploadRate;
+  var selectedPreset = BtunTransportPreset.stable;
   Timer? saveDebounce;
 
   @override
@@ -1008,6 +1013,9 @@ class _SettingsTabState extends State<SettingsTab> {
   }
 
   void _sync() {
+    if (profile.text != widget.controller.profileDir) {
+      profile.text = widget.controller.profileDir;
+    }
     final config = widget.controller.config;
     if (config == null) return;
     sessionId.text = config.sessionId;
@@ -1018,6 +1026,7 @@ class _SettingsTabState extends State<SettingsTab> {
     chunkSize.text = config.chunkSize.toString();
     pollMs.text = config.pollInterval.inMilliseconds.toString();
     uploadRate.text = config.uploadRateLimitPerMinute.toString();
+    selectedPreset = config.transportPreset;
   }
 
   @override
@@ -1038,253 +1047,322 @@ class _SettingsTabState extends State<SettingsTab> {
   @override
   Widget build(BuildContext context) {
     final config = widget.controller.config;
+    final compact = MediaQuery.sizeOf(context).width < 720;
+    final disabled = widget.controller.isRunning;
+    final android = Platform.isAndroid;
     return AppPage(
       title: 'Settings',
       subtitle: 'Client profile, peer key, SOCKS, performance, and appearance',
       child: Builder(
         builder: (context) {
-          final profileCard = Card(
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const SectionHeader(
-                    icon: Icons.folder_outlined,
-                    title: 'Profile',
-                  ),
+          final profileCard = SettingsCard(
+            icon: Icons.folder_outlined,
+            title: 'Profile',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SettingsField(
+                  controller: sessionId,
+                  enabled: !disabled,
+                  onChanged: (_) => _scheduleSave(),
+                  label: 'Session name',
+                  helperText: 'Stop the client before changing it.',
+                ),
+                if (config == null) ...[
                   const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: _initConfig,
+                    icon: const Icon(Icons.key),
+                    label: const Text('Initialize config'),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                if (android)
+                  SettingsField(
+                    controller: profile,
+                    enabled: false,
+                    label: 'Profile directory',
+                  )
+                else
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(
-                        child: TextField(
-                          controller: sessionId,
-                          enabled: !widget.controller.isRunning,
-                          onChanged: (_) => _scheduleSave(),
-                          decoration: const InputDecoration(
-                            labelText: 'Session name',
-                            helperText: 'Stop the client before changing it.',
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  if (config == null) ...[
-                    const SizedBox(height: 12),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: FilledButton.icon(
-                        onPressed: _initConfig,
-                        icon: const Icon(Icons.key),
-                        label: const Text('Initialize config'),
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
+                        child: SettingsField(
                           controller: profile,
-                          decoration: const InputDecoration(
-                            labelText: 'Profile directory',
-                          ),
+                          label: 'Profile directory',
                         ),
                       ),
                       const SizedBox(width: 10),
-                      FilledButton(
-                        onPressed: () =>
-                            widget.controller.setProfileDir(profile.text),
-                        child: const Text('Load'),
+                      SizedBox(
+                        height: 34,
+                        child: FilledButton(
+                          style: FilledButton.styleFrom(
+                            minimumSize: const Size(60, 34),
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            textStyle: Theme.of(context).textTheme.labelMedium,
+                          ),
+                          onPressed: () =>
+                              widget.controller.setProfileDir(profile.text),
+                          child: const Text('Load'),
+                        ),
                       ),
                     ],
                   ),
-                ],
-              ),
+              ],
             ),
           );
           final exchangeCard = ExchangePanel(
             controller: widget.controller,
             config: config,
           );
-          final tunnelCard = Card(
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SectionHeader(
-                    icon: Icons.vpn_key_outlined,
-                    title: 'Tunnel',
-                    trailing: Wrap(
-                      spacing: 8,
-                      children: [
-                        IconButton(
-                          tooltip: 'Paste relay public key',
-                          onPressed: () async {
-                            final data = await Clipboard.getData('text/plain');
-                            if (data?.text?.trim().isNotEmpty ?? false) {
-                              peerKey.text = data!.text!.trim();
-                              _scheduleSave();
-                            }
-                          },
-                          icon: const Icon(Icons.content_paste),
+          final tunnelCard = SettingsCard(
+            icon: Icons.vpn_key_outlined,
+            title: 'Tunnel',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: SettingsField(
+                        controller: peerKey,
+                        enabled: !disabled,
+                        maxLines: 1,
+                        onChanged: (_) => _scheduleSave(),
+                        label: 'Relay public key',
+                        helperText:
+                            'Paste the relay machine local public key here.',
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    SizedBox(
+                      height: 34,
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size(70, 34),
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          textStyle: Theme.of(context).textTheme.labelMedium,
                         ),
-                      ],
+                        onPressed: disabled
+                            ? null
+                            : () async {
+                                final data = await Clipboard.getData(
+                                  'text/plain',
+                                );
+                                if (data?.text?.trim().isNotEmpty ?? false) {
+                                  peerKey.text = data!.text!.trim();
+                                  _scheduleSave();
+                                }
+                              },
+                        icon: const Icon(Icons.content_paste, size: 18),
+                        label: const Text('Paste'),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: peerKey,
-                    enabled: !widget.controller.isRunning,
-                    maxLines: 1,
+                  ],
+                ),
+                const SizedBox(height: 12),
+                if (compact) ...[
+                  SettingsField(
+                    controller: host,
+                    enabled: !disabled,
                     onChanged: (_) => _scheduleSave(),
-                    decoration: const InputDecoration(
-                      labelText: 'Relay public key',
-                      helperText:
-                          'Paste the relay machine local public key here.',
-                    ),
+                    label: 'SOCKS host',
                   ),
                   const SizedBox(height: 12),
+                  SettingsField(
+                    controller: port,
+                    enabled: !disabled,
+                    keyboardType: TextInputType.number,
+                    onChanged: (_) => _scheduleSave(),
+                    label: 'SOCKS port',
+                  ),
+                ] else
                   Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(
-                        child: TextField(
+                        child: SettingsField(
                           controller: host,
-                          enabled: !widget.controller.isRunning,
+                          enabled: !disabled,
                           onChanged: (_) => _scheduleSave(),
-                          decoration: const InputDecoration(
-                            labelText: 'SOCKS host',
-                          ),
+                          label: 'SOCKS host',
                         ),
                       ),
                       const SizedBox(width: 10),
                       SizedBox(
-                        width: 150,
-                        child: TextField(
+                        width: 160,
+                        child: SettingsField(
                           controller: port,
-                          enabled: !widget.controller.isRunning,
+                          enabled: !disabled,
                           keyboardType: TextInputType.number,
                           onChanged: (_) => _scheduleSave(),
-                          decoration: const InputDecoration(
-                            labelText: 'SOCKS port',
-                          ),
+                          label: 'SOCKS port',
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 14),
-                  const SectionHeader(
-                    icon: Icons.speed_outlined,
-                    title: 'Performance',
-                    dense: true,
-                  ),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
+              ],
+            ),
+          );
+          final performanceCard = SettingsCard(
+            icon: Icons.speed_outlined,
+            title: 'Performance',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ResponsiveOptionGroup<BtunTransportPreset>(
+                  selected: selectedPreset,
+                  enabled: !disabled,
+                  options: const [
+                    OptionItem(
+                      value: BtunTransportPreset.interactive,
+                      icon: Icons.bolt,
+                      label: 'Interactive',
+                    ),
+                    OptionItem(
+                      value: BtunTransportPreset.stable,
+                      icon: Icons.speed,
+                      label: 'Stable',
+                    ),
+                    OptionItem(
+                      value: BtunTransportPreset.resilient,
+                      icon: Icons.shield_outlined,
+                      label: 'Resilient',
+                    ),
+                    OptionItem(
+                      value: BtunTransportPreset.custom,
+                      icon: Icons.tune,
+                      label: 'Custom',
+                    ),
+                  ],
+                  onChanged: _applyPreset,
+                ),
+                const SizedBox(height: 12),
+                PresetSummary(preset: selectedPreset, config: config),
+                const SizedBox(height: 4),
+                Theme(
+                  data: Theme.of(
+                    context,
+                  ).copyWith(dividerColor: Colors.transparent),
+                  child: ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    childrenPadding: const EdgeInsets.only(top: 6),
+                    title: Text(
+                      'Advanced values',
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
                     children: [
-                      NumberField(
-                        label: 'Chunk bytes',
-                        controller: chunkSize,
-                        onChanged: _scheduleSave,
-                      ),
-                      NumberField(
-                        label: 'Max uploads',
-                        controller: maxInFlight,
-                        onChanged: _scheduleSave,
-                      ),
-                      NumberField(
-                        label: 'Poll ms',
-                        controller: pollMs,
-                        onChanged: _scheduleSave,
-                      ),
-                      NumberField(
-                        label: 'Uploads / min',
-                        controller: uploadRate,
-                        onChanged: _scheduleSave,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          );
-          final appearanceCard = Card(
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const SectionHeader(
-                    icon: Icons.palette_outlined,
-                    title: 'Appearance',
-                    dense: true,
-                  ),
-                  const SizedBox(height: 10),
-                  SegmentedButton<ThemeMode>(
-                    segments: const [
-                      ButtonSegment(
-                        value: ThemeMode.system,
-                        icon: Icon(Icons.brightness_auto),
-                        label: Text('System'),
-                      ),
-                      ButtonSegment(
-                        value: ThemeMode.light,
-                        icon: Icon(Icons.light_mode),
-                        label: Text('Light'),
-                      ),
-                      ButtonSegment(
-                        value: ThemeMode.dark,
-                        icon: Icon(Icons.dark_mode),
-                        label: Text('Dark'),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          NumberField(
+                            label: 'Chunk bytes',
+                            controller: chunkSize,
+                            onChanged: _scheduleCustomPerformanceSave,
+                          ),
+                          NumberField(
+                            label: 'Max uploads',
+                            controller: maxInFlight,
+                            onChanged: _scheduleCustomPerformanceSave,
+                          ),
+                          NumberField(
+                            label: 'Poll ms',
+                            controller: pollMs,
+                            onChanged: _scheduleCustomPerformanceSave,
+                          ),
+                          NumberField(
+                            label: 'Uploads / min',
+                            controller: uploadRate,
+                            onChanged: _scheduleCustomPerformanceSave,
+                          ),
+                        ],
                       ),
                     ],
-                    selected: {widget.controller.themeMode},
-                    onSelectionChanged: (values) =>
-                        widget.controller.setThemeMode(values.first),
-                  ),
-                ],
-              ),
-            ),
-          );
-          return ListView(
-            padding: const EdgeInsets.all(20),
-            children: [
-              profileCard,
-              const SizedBox(height: 16),
-              tunnelCard,
-              const SizedBox(height: 16),
-              exchangeCard,
-              const SizedBox(height: 16),
-              appearanceCard,
-              const SizedBox(height: 20),
-              Center(
-                child: Text(
-                  '$appTitle $appVersionLabel',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
                 ),
+              ],
+            ),
+          );
+          final appearanceCard = SettingsCard(
+            icon: Icons.palette_outlined,
+            title: 'Appearance',
+            child: ResponsiveOptionGroup<ThemeMode>(
+              selected: widget.controller.themeMode,
+              options: const [
+                OptionItem(
+                  value: ThemeMode.system,
+                  icon: Icons.brightness_auto,
+                  label: 'System',
+                ),
+                OptionItem(
+                  value: ThemeMode.light,
+                  icon: Icons.light_mode,
+                  label: 'Light',
+                ),
+                OptionItem(
+                  value: ThemeMode.dark,
+                  icon: Icons.dark_mode,
+                  label: 'Dark',
+                ),
+              ],
+              onChanged: widget.controller.setThemeMode,
+            ),
+          );
+          const aboutCard = AboutCard();
+          return Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1180),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: ListView(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: compact ? 14 : 24,
+                        vertical: compact ? 14 : 20,
+                      ),
+                      children: [
+                        profileCard,
+                        const SizedBox(height: 12),
+                        tunnelCard,
+                        const SizedBox(height: 12),
+                        performanceCard,
+                        const SizedBox(height: 12),
+                        exchangeCard,
+                        const SizedBox(height: 12),
+                        appearanceCard,
+                        const SizedBox(height: 12),
+                        aboutCard,
+                      ],
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           );
         },
       ),
     );
   }
 
-  Future<void> _save() async {
+  Future<void> _save({
+    BtunTransportPreset? transportPreset,
+    bool includePerformance = false,
+  }) async {
     await widget.controller.saveConfig(
       sessionId: sessionId.text,
       peerPublicKey: peerKey.text,
       socksHost: host.text,
       socksPort: int.tryParse(port.text),
-      maxInFlight: int.tryParse(maxInFlight.text),
-      chunkSize: int.tryParse(chunkSize.text),
-      pollMs: int.tryParse(pollMs.text),
-      uploadRateLimit: int.tryParse(uploadRate.text),
+      maxInFlight: includePerformance ? int.tryParse(maxInFlight.text) : null,
+      chunkSize: includePerformance ? int.tryParse(chunkSize.text) : null,
+      pollMs: includePerformance ? int.tryParse(pollMs.text) : null,
+      uploadRateLimit: includePerformance
+          ? int.tryParse(uploadRate.text)
+          : null,
+      transportPreset: transportPreset,
     );
   }
 
@@ -1297,6 +1375,299 @@ class _SettingsTabState extends State<SettingsTab> {
     if (widget.controller.isRunning) return;
     saveDebounce?.cancel();
     saveDebounce = Timer(const Duration(milliseconds: 450), _save);
+  }
+
+  void _scheduleCustomPerformanceSave() {
+    if (widget.controller.isRunning) return;
+    setState(() => selectedPreset = BtunTransportPreset.custom);
+    saveDebounce?.cancel();
+    saveDebounce = Timer(
+      const Duration(milliseconds: 450),
+      () => _save(
+        transportPreset: BtunTransportPreset.custom,
+        includePerformance: true,
+      ),
+    );
+  }
+
+  Future<void> _applyPreset(BtunTransportPreset preset) async {
+    if (widget.controller.isRunning) return;
+    setState(() => selectedPreset = preset);
+    final spec = btunTransportPresetSpecs[preset];
+    if (spec != null) {
+      chunkSize.text = spec.chunkSize.toString();
+      maxInFlight.text = spec.maxInFlight.toString();
+      pollMs.text = spec.pollInterval.inMilliseconds.toString();
+      uploadRate.text = spec.uploadRateLimitPerMinute.toString();
+    }
+    await _save(transportPreset: preset);
+    _sync();
+  }
+}
+
+class SettingsCard extends StatelessWidget {
+  const SettingsCard({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.child,
+    this.trailing,
+  });
+
+  final IconData icon;
+  final String title;
+  final Widget child;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SectionHeader(
+              icon: icon,
+              title: title,
+              trailing: trailing,
+              dense: true,
+            ),
+            const SizedBox(height: 14),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class SettingsField extends StatelessWidget {
+  const SettingsField({
+    super.key,
+    required this.controller,
+    required this.label,
+    this.helperText,
+    this.enabled = true,
+    this.maxLines = 1,
+    this.keyboardType,
+    this.onChanged,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final String? helperText;
+  final bool enabled;
+  final int maxLines;
+  final TextInputType? keyboardType;
+  final ValueChanged<String>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      enabled: enabled,
+      maxLines: maxLines,
+      keyboardType: keyboardType,
+      style: Theme.of(context).textTheme.bodyMedium,
+      onChanged: onChanged,
+      decoration: InputDecoration(
+        labelText: label,
+        helperText: helperText,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 12,
+        ),
+      ),
+    );
+  }
+}
+
+class OptionItem<T> {
+  const OptionItem({
+    required this.value,
+    required this.icon,
+    required this.label,
+  });
+
+  final T value;
+  final IconData icon;
+  final String label;
+}
+
+class ResponsiveOptionGroup<T> extends StatelessWidget {
+  const ResponsiveOptionGroup({
+    super.key,
+    required this.selected,
+    required this.options,
+    required this.onChanged,
+    this.enabled = true,
+  });
+
+  final T selected;
+  final List<OptionItem<T>> options;
+  final ValueChanged<T> onChanged;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < options.length * 132;
+        if (!compact) {
+          return Align(
+            alignment: Alignment.centerLeft,
+            child: SegmentedButton<T>(
+              showSelectedIcon: false,
+              segments: [
+                for (final option in options)
+                  ButtonSegment(
+                    value: option.value,
+                    icon: Icon(option.icon),
+                    label: Text(option.label),
+                  ),
+              ],
+              selected: {selected},
+              onSelectionChanged: enabled
+                  ? (values) => onChanged(values.first)
+                  : null,
+            ),
+          );
+        }
+        return DropdownButtonFormField<T>(
+          initialValue: selected,
+          isExpanded: true,
+          decoration: const InputDecoration(
+            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          ),
+          items: [
+            for (final option in options)
+              DropdownMenuItem<T>(
+                value: option.value,
+                child: Row(
+                  children: [
+                    Icon(option.icon, size: 18),
+                    const SizedBox(width: 10),
+                    Text(option.label),
+                  ],
+                ),
+              ),
+          ],
+          onChanged: enabled
+              ? (value) {
+                  if (value != null) onChanged(value);
+                }
+              : null,
+        );
+      },
+    );
+  }
+}
+
+class PresetSummary extends StatelessWidget {
+  const PresetSummary({super.key, required this.preset, required this.config});
+
+  final BtunTransportPreset preset;
+  final BtunConfig? config;
+
+  @override
+  Widget build(BuildContext context) {
+    final spec = btunTransportPresetSpecs[preset];
+    final scheme = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
+    final title = spec?.label ?? 'Custom';
+    final description =
+        spec?.description ?? 'Manual transport values are active.';
+    final activeConfig = config;
+    final details = activeConfig == null
+        ? 'Initialize config to save transport values.'
+        : '${_formatBytes(activeConfig.chunkSize)} chunks, '
+              '${_formatBytes(activeConfig.bulkChunkSize)} bulk, '
+              '${activeConfig.uploadRateLimitPerMinute}/min, '
+              '${activeConfig.uploadMinInterval.inMilliseconds}ms spacing';
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: scheme.primary.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: text.titleSmall),
+          const SizedBox(height: 3),
+          Text(
+            description,
+            style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            details,
+            style: text.labelMedium?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes % (1024 * 1024) == 0) {
+      return '${bytes ~/ (1024 * 1024)}MB';
+    }
+    if (bytes % 1024 == 0) return '${bytes ~/ 1024}KB';
+    return '${bytes}B';
+  }
+}
+
+class AboutCard extends StatelessWidget {
+  const AboutCard({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SettingsCard(
+      icon: Icons.info_outline,
+      title: 'About',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '$appTitle $appVersionLabel',
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'A VPN tunnel over Bale messenger.',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(0, 36),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                textStyle: Theme.of(context).textTheme.labelMedium,
+              ),
+              onPressed: openRepositoryUrl,
+              icon: const Icon(Icons.open_in_new, size: 16),
+              label: const Text('Open GitHub'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+Future<void> openRepositoryUrl() async {
+  final uri = Uri.parse(appRepositoryUrl);
+  if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+    throw Exception('Could not open $appRepositoryUrl');
   }
 }
 
