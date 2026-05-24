@@ -1036,7 +1036,7 @@ void main() {
     await chunkTransport.close();
   });
 
-  test('config fills missing transport settings with stable defaults', () {
+  test('config fills missing transport settings with adaptive defaults', () {
     final config = BtunConfig.fromJson({
       'role': 'client',
       'session_file': 'session.json',
@@ -1046,21 +1046,21 @@ void main() {
       'local_private_key': '',
     });
 
-    expect(config.transportPreset, BtunTransportPreset.stable);
-    expect(config.chunkSize, 256 * 1024);
-    expect(config.maxInFlight, 2);
-    expect(config.pollInterval, const Duration(milliseconds: 2500));
+    expect(config.adaptive, BtunAdaptiveConfig.defaults);
+    expect(config.chunkSize, 64 * 1024);
+    expect(config.maxInFlight, 3);
+    expect(config.pollInterval, const Duration(milliseconds: 300));
     expect(config.uploadMinInterval, Duration.zero);
-    expect(config.uploadRateLimitPerMinute, 50);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 750));
-    expect(config.flushDelay, const Duration(milliseconds: 75));
-    expect(config.bulkFlushDelay, const Duration(milliseconds: 200));
-    expect(config.bulkChunkSize, 512 * 1024);
+    expect(config.uploadRateLimitPerMinute, 70);
+    expect(config.ackFlushInterval, const Duration(milliseconds: 20));
+    expect(config.flushDelay, Duration.zero);
+    expect(config.bulkFlushDelay, const Duration(milliseconds: 250));
+    expect(config.bulkChunkSize, 1024 * 1024);
     expect(config.maxRetryChunks, 64);
     expect(config.maxRetryBytes, 64 * 1024 * 1024);
   });
 
-  test('config migrates old 40 upload rate limit to stable budget', () {
+  test('config ignores old fixed upload rate fields', () {
     final config = BtunConfig.fromJson({
       'role': 'client',
       'session_file': 'session.json',
@@ -1071,66 +1071,24 @@ void main() {
       'upload_rate_limit_per_minute': 40,
     });
 
-    expect(config.uploadRateLimitPerMinute, 50);
+    expect(config.uploadRateLimitPerMinute, 70);
   });
 
-  test('config defaults use responsive stable uploads', () {
+  test('config defaults use adaptive fast bounds', () {
     final config = BtunConfig.defaults(profileDir: '.btun-test');
 
-    expect(config.transportPreset, BtunTransportPreset.stable);
-    expect(config.chunkSize, 256 * 1024);
-    expect(config.maxInFlight, 2);
-    expect(config.pollInterval, const Duration(milliseconds: 2500));
+    expect(config.adaptive, BtunAdaptiveConfig.defaults);
+    expect(config.chunkSize, 64 * 1024);
+    expect(config.maxInFlight, 3);
+    expect(config.pollInterval, const Duration(milliseconds: 300));
     expect(config.uploadMinInterval, Duration.zero);
-    expect(config.uploadRateLimitPerMinute, 50);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 750));
-    expect(config.flushDelay, const Duration(milliseconds: 75));
-    expect(config.bulkFlushDelay, const Duration(milliseconds: 200));
-    expect(config.bulkChunkSize, 512 * 1024);
+    expect(config.uploadRateLimitPerMinute, 70);
+    expect(config.ackFlushInterval, const Duration(milliseconds: 20));
+    expect(config.flushDelay, Duration.zero);
+    expect(config.bulkFlushDelay, const Duration(milliseconds: 250));
+    expect(config.bulkChunkSize, 1024 * 1024);
     expect(config.maxRetryChunks, 64);
     expect(config.maxRetryBytes, 64 * 1024 * 1024);
-  });
-
-  test('transport presets apply exact stability budgets', () {
-    final base = BtunConfig.defaults(profileDir: '.btun-test');
-
-    final interactive = base.applyTransportPreset(
-      BtunTransportPreset.interactive,
-    );
-    expect(interactive.chunkSize, 64 * 1024);
-    expect(interactive.bulkChunkSize, 512 * 1024);
-    expect(interactive.maxInFlight, 4);
-    expect(interactive.pollInterval, const Duration(milliseconds: 400));
-    expect(interactive.uploadMinInterval, Duration.zero);
-    expect(interactive.uploadRateLimitPerMinute, 55);
-    expect(interactive.ackFlushInterval, const Duration(milliseconds: 75));
-    expect(interactive.flushDelay, Duration.zero);
-    expect(interactive.bulkFlushDelay, const Duration(milliseconds: 40));
-    expect(interactive.maxStreams, 8);
-
-    final stable = base.applyTransportPreset(BtunTransportPreset.stable);
-    expect(stable.chunkSize, 256 * 1024);
-    expect(stable.bulkChunkSize, 512 * 1024);
-    expect(stable.maxInFlight, 2);
-    expect(stable.pollInterval, const Duration(milliseconds: 2500));
-    expect(stable.uploadMinInterval, Duration.zero);
-    expect(stable.uploadRateLimitPerMinute, 50);
-    expect(stable.ackFlushInterval, const Duration(milliseconds: 750));
-    expect(stable.flushDelay, const Duration(milliseconds: 75));
-    expect(stable.bulkFlushDelay, const Duration(milliseconds: 200));
-    expect(stable.maxStreams, 5);
-
-    final resilient = base.applyTransportPreset(BtunTransportPreset.resilient);
-    expect(resilient.chunkSize, 256 * 1024);
-    expect(resilient.bulkChunkSize, 2 * 1024 * 1024);
-    expect(resilient.maxInFlight, 2);
-    expect(resilient.pollInterval, const Duration(milliseconds: 2000));
-    expect(resilient.uploadMinInterval, const Duration(milliseconds: 500));
-    expect(resilient.uploadRateLimitPerMinute, 35);
-    expect(resilient.ackFlushInterval, const Duration(milliseconds: 500));
-    expect(resilient.flushDelay, const Duration(milliseconds: 100));
-    expect(resilient.bulkFlushDelay, const Duration(milliseconds: 300));
-    expect(resilient.maxStreams, 2);
   });
 }
 

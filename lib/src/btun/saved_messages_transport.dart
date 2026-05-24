@@ -34,6 +34,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   final Logger logger;
   int maxConcurrentUploads;
   final int? accountUserId;
+  late Duration _fastPollInterval = pollInterval;
 
   final StreamController<IncomingTunnelFile> _incoming =
       StreamController<IncomingTunnelFile>.broadcast();
@@ -91,6 +92,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   }) {
     final pollChanged = this.pollInterval != pollInterval;
     this.pollInterval = pollInterval;
+    _fastPollInterval = pollInterval;
     this.uploadMinInterval = uploadMinInterval;
     this.uploadRateLimitPerMinute = uploadRateLimitPerMinute;
     this.maxConcurrentUploads = maxConcurrentUploads;
@@ -288,6 +290,10 @@ class BaleSavedMessagesTransport implements TunnelTransport {
       try {
         final result = await action();
         _rateLimitFailures = 0;
+        if (operation.startsWith('poll ') ||
+            operation.startsWith('download ')) {
+          _recoverPollInterval();
+        }
         return result;
       } on Object catch (error) {
         if (isBaleRateLimit(error)) {
@@ -421,6 +427,9 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     if (rateLimit && operation.startsWith('send ')) {
       _lowerUploadRateLimit();
     }
+    if (operation.startsWith('poll ') || operation.startsWith('download ')) {
+      _slowPollInterval();
+    }
     final fallback = rateLimit
         ? Duration(
             seconds: switch (_rateLimitFailures) {
@@ -462,6 +471,36 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         'Bale operation failed during $operation; already backing off',
       );
     }
+  }
+
+  void _slowPollInterval() {
+    const maxPoll = Duration(seconds: 4);
+    final nextMs = (pollInterval.inMilliseconds * 2).clamp(
+      _fastPollInterval.inMilliseconds,
+      maxPoll.inMilliseconds,
+    );
+    _setPollInterval(Duration(milliseconds: nextMs));
+  }
+
+  void _recoverPollInterval() {
+    if (pollInterval <= _fastPollInterval) return;
+    final nextMs = (pollInterval.inMilliseconds * 0.75).round().clamp(
+      _fastPollInterval.inMilliseconds,
+      pollInterval.inMilliseconds,
+    );
+    _setPollInterval(Duration(milliseconds: nextMs));
+  }
+
+  void _setPollInterval(Duration next) {
+    if (next == pollInterval) return;
+    pollInterval = next;
+    if (_updates == null) return;
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(pollInterval, (_) => unawaited(_poll()));
+    logger.info(
+      'adaptive poll interval ${pollInterval.inMilliseconds}ms '
+      'account=${accountUserId ?? 'unknown'}',
+    );
   }
 
   @override

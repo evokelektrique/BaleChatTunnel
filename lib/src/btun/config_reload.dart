@@ -21,7 +21,8 @@ class BtunConfigDiff {
     if (!_sameAccounts(oldConfig.accounts, nextConfig.accounts)) {
       live.add('accounts');
     }
-    if (oldConfig.pollInterval != nextConfig.pollInterval ||
+    if (oldConfig.adaptive != nextConfig.adaptive ||
+        oldConfig.pollInterval != nextConfig.pollInterval ||
         oldConfig.uploadMinInterval != nextConfig.uploadMinInterval ||
         oldConfig.uploadRateLimitPerMinute !=
             nextConfig.uploadRateLimitPerMinute ||

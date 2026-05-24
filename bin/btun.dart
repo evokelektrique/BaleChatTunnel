@@ -158,10 +158,6 @@ class BtunCli {
           localPrivateKey: localKeys.privateKey,
           peerPublicKey: peerPublicKey,
         );
-    final transportPreset = _transportPresetValue('transport-preset');
-    if (transportPreset != null) {
-      config = config.applyTransportPreset(transportPreset);
-    }
     await config.save(configPath);
     stdout.writeln('Wrote $configPath');
     stdout.writeln('session_id: ${config.sessionId}');
@@ -183,24 +179,36 @@ class BtunCli {
       '${_peerStatusLabel(config.role)}: ${config.peerPublicKey ?? '<not set>'}',
     );
     stdout.writeln('socks: ${config.socksHost}:${config.socksPort}');
-    stdout.writeln('transport_preset: ${config.transportPreset.name}');
-    stdout.writeln('chunk_size: ${config.chunkSize}');
-    stdout.writeln('poll_interval_ms: ${config.pollInterval.inMilliseconds}');
+    stdout.writeln('adaptive: true');
+    stdout.writeln('min_chunk_size: ${config.adaptive.minChunkSize}');
+    stdout.writeln('max_chunk_size: ${config.adaptive.maxChunkSize}');
+    stdout.writeln(
+      'min_poll_interval_ms: ${config.adaptive.minPollInterval.inMilliseconds}',
+    );
+    stdout.writeln(
+      'max_poll_interval_ms: ${config.adaptive.maxPollInterval.inMilliseconds}',
+    );
     stdout.writeln('retry_timeout_ms: ${config.retryTimeout.inMilliseconds}');
     stdout.writeln(
-      'upload_min_interval_ms: ${config.uploadMinInterval.inMilliseconds}',
+      'min_upload_rate_per_minute: ${config.adaptive.minUploadRatePerMinute}',
     );
     stdout.writeln(
-      'upload_rate_limit_per_minute: ${config.uploadRateLimitPerMinute}',
+      'max_upload_rate_per_minute: ${config.adaptive.maxUploadRatePerMinute}',
     );
     stdout.writeln(
-      'ack_flush_interval_ms: ${config.ackFlushInterval.inMilliseconds}',
+      'min_ack_flush_interval_ms: ${config.adaptive.minAckFlushInterval.inMilliseconds}',
     );
-    stdout.writeln('flush_delay_ms: ${config.flushDelay.inMilliseconds}');
     stdout.writeln(
-      'bulk_flush_delay_ms: ${config.bulkFlushDelay.inMilliseconds}',
+      'max_ack_flush_interval_ms: ${config.adaptive.maxAckFlushInterval.inMilliseconds}',
     );
-    stdout.writeln('bulk_chunk_size: ${config.bulkChunkSize}');
+    stdout.writeln(
+      'min_flush_delay_ms: ${config.adaptive.minFlushDelay.inMilliseconds}',
+    );
+    stdout.writeln(
+      'max_flush_delay_ms: ${config.adaptive.maxFlushDelay.inMilliseconds}',
+    );
+    stdout.writeln('max_in_flight: ${config.adaptive.maxInFlight}');
+    stdout.writeln('max_streams: ${config.adaptive.maxStreams}');
     stdout.writeln('max_retry_chunks: ${config.maxRetryChunks}');
     stdout.writeln('max_retry_bytes: ${config.maxRetryBytes}');
     stdout.writeln('accounts: ${config.accounts.length}');
@@ -616,17 +624,6 @@ class BtunCli {
     return null;
   }
 
-  BtunTransportPreset? _transportPresetValue(String name) {
-    final value = _value(name);
-    if (value == null) return null;
-    for (final preset in BtunTransportPreset.values) {
-      if (preset.name == value.trim().toLowerCase()) return preset;
-    }
-    throw FormatException(
-      'invalid --$name: enter one of interactive, stable, resilient, custom',
-    );
-  }
-
   BtunRole? _roleValue(String name) {
     final value = _value(name);
     if (value == null) return null;
@@ -689,7 +686,6 @@ Options:
   --config <path>          Default: <profile>/config.json
   --role <client|relay>    Setup role override
   --session-id <id>        Override session id
-  --transport-preset <p>   interactive, stable, resilient, or custom
   --peer-public-key <key>  Public key from the other side
   --client-public-key <key> Alias for peer key when this machine is relay
   --relay-public-key <key> Alias for peer key when this machine is client

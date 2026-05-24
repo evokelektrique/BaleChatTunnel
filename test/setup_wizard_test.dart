@@ -35,39 +35,6 @@ void main() {
       );
     });
 
-    test('parses transport presets and legacy aliases', () {
-      expect(
-        parseTransportPreset('', defaultValue: BtunTransportPreset.stable),
-        BtunTransportPreset.stable,
-      );
-      expect(
-        parseTransportPreset('1', defaultValue: BtunTransportPreset.stable),
-        BtunTransportPreset.interactive,
-      );
-      expect(
-        parseTransportPreset(
-          'balanced',
-          defaultValue: BtunTransportPreset.custom,
-        ),
-        BtunTransportPreset.stable,
-      );
-      expect(
-        parseTransportPreset('3', defaultValue: BtunTransportPreset.custom),
-        BtunTransportPreset.resilient,
-      );
-      expect(
-        parseTransportPreset('4', defaultValue: BtunTransportPreset.stable),
-        BtunTransportPreset.custom,
-      );
-      expect(
-        () => parseTransportPreset(
-          'reckless',
-          defaultValue: BtunTransportPreset.stable,
-        ),
-        throwsFormatException,
-      );
-    });
-
     test('? help repeats prompt and invalid input retries', () async {
       final output = StringBuffer();
       final wizard = _wizard(lines: ['?', 'later', 'yes'], output: output);
@@ -106,6 +73,9 @@ void main() {
       expect(output.toString(), contains('relay_public_key:'));
       expect(output.toString(), contains('Missing Client public key.'));
       expect(output.toString(), contains('btun login --profile ${temp.path}'));
+      expect(output.toString(), isNot(contains('Client SOCKS')));
+      expect(output.toString(), isNot(contains('SOCKS host')));
+      expect(output.toString(), isNot(contains('SOCKS port')));
     });
 
     test('existing config preserves local keys', () async {
@@ -123,7 +93,12 @@ void main() {
       await _wizard(
         lines: [
           'yes',
-          ..._defaultSetupLines(login: 'no'),
+          '',
+          '',
+          '',
+          '',
+          '',
+          'no',
         ],
         output: StringBuffer(),
         profile: temp.path,
@@ -148,20 +123,6 @@ void main() {
             'peer-key',
             '127.0.0.2',
             '1081',
-            '4',
-            '111111',
-            '222222',
-            '3',
-            '1500',
-            '30000',
-            '25',
-            '30',
-            '400',
-            '50',
-            '60',
-            '7',
-            '123456',
-            '9',
             'no',
           ],
           output: output,
@@ -177,20 +138,9 @@ void main() {
         expect(output.toString(), contains('client_public_key:'));
         expect(config.socksHost, '127.0.0.2');
         expect(config.socksPort, 1081);
-        expect(config.chunkSize, 111111);
-        expect(config.bulkChunkSize, 222222);
-        expect(config.maxInFlight, 3);
-        expect(config.pollInterval.inMilliseconds, 1500);
-        expect(config.retryTimeout.inMilliseconds, 30000);
-        expect(config.uploadMinInterval.inMilliseconds, 25);
-        expect(config.uploadRateLimitPerMinute, 30);
-        expect(config.ackFlushInterval.inMilliseconds, 400);
-        expect(config.flushDelay.inMilliseconds, 50);
-        expect(config.bulkFlushDelay.inMilliseconds, 60);
-        expect(config.maxRetryChunks, 7);
-        expect(config.maxRetryBytes, 123456);
-        expect(config.maxStreams, 9);
-        expect(config.transportPreset, BtunTransportPreset.custom);
+        expect(config.adaptive, BtunAdaptiveConfig.defaults);
+        expect(config.maxRetryChunks, 64);
+        expect(config.maxRetryBytes, 64 * 1024 * 1024);
       },
     );
 
@@ -240,6 +190,6 @@ BtunSetupWizard _wizard({
 }
 
 List<String> _defaultSetupLines({required String login, bool role = true}) => [
-  ...List.filled(role ? 7 : 6, ''),
+  ...List.filled(role ? 3 : 2, ''),
   login,
 ];

@@ -36,12 +36,11 @@ For Linux desktop builds, install the usual Flutter Linux build dependencies:
 For a Linux x64 relay host, use the installer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
 ```
 
-The installer downloads the latest Linux CLI release, installs it locally, runs
-relay setup for `~/.btun-relay`, and creates a user systemd service when
-available.
+The installer downloads the latest Linux CLI release, runs relay setup for
+`~/.btun-relay`, and creates a user systemd service when available.
 
 <details>
 <summary>Advanced setup</summary>
@@ -58,10 +57,10 @@ make build-cli-linux-x64
 Installer overrides:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_VERSION=v0.2.1 bash
-curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_INSTALL_DIR=/usr/local/bin BTUN_PROFILE=/etc/btun/relay bash
-curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_RUN_SETUP=0 bash
-curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh | BTUN_INSTALL_SERVICE=0 bash
+BTUN_VERSION=v0.2.1 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
+BTUN_INSTALL_DIR=/usr/local/bin BTUN_PROFILE=/etc/btun/relay bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
+BTUN_RUN_SETUP=0 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
+BTUN_INSTALL_SERVICE=0 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
 ```
 
 Service commands:
@@ -75,15 +74,13 @@ journalctl --user -u btun-relay -f
 Set `BTUN_ENABLE_SERVICE=0` to install the service without starting it, or
 `BTUN_SERVICE_NAME=NAME` to use a different service name.
 
-Uninstall relay service and default installer files:
+Uninstall relay service, binary, and default relay profile:
 
 ```bash
-systemctl --user disable --now btun-relay
-rm -f ~/.config/systemd/user/btun-relay.service
-systemctl --user daemon-reload
-rm -f ~/.local/bin/bale-chat-tunnel-cli-linux-x64
-rm -rf ~/.btun-relay
+bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/uninstall-relay.sh)
 ```
+
+Set `BTUN_REMOVE_PROFILE=0` to keep `~/.btun-relay`.
 
 Manual CLI setup:
 
@@ -102,40 +99,42 @@ Manual CLI setup:
 
 ## Quick Start
 
-Use the same Bale account on both machines.
+Use one Bale account on the client and one on the relay.
 
-These examples use the Linux x64 CLI release binary name:
-`./bale-chat-tunnel-cli-linux-x64`.
-
-On the relay machine:
+1. Install and set up the relay:
 
 ```bash
-./bale-chat-tunnel-cli-linux-x64 setup --profile .btun-relay
+bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
 ```
 
-Choose `relay`, log in to Bale, and copy the printed `relay_public_key`.
+Copy `relay_public_key`.
 
-On the client machine:
-
-Use the desktop app when possible; it is the easier setup path. If you are using
-the Linux CLI binary, run:
+2. Set up the client with the desktop app, or with the CLI:
 
 ```bash
 ./bale-chat-tunnel-cli-linux-x64 setup --profile .btun-client
 ./bale-chat-tunnel-cli-linux-x64 client --profile .btun-client --socks-port 1080
 ```
 
-Choose `client`, paste the relay public key, and copy the printed
+Choose `client`, paste the `relay_public_key`, and copy the printed
 `client_public_key`.
 
-Back on the relay machine, add the client key and start the relay:
+3. Add the client key on the relay:
 
 ```bash
-./bale-chat-tunnel-cli-linux-x64 init --profile .btun-relay --client-public-key CLIENT_PUBLIC_KEY
-./bale-chat-tunnel-cli-linux-x64 relay --profile .btun-relay
+bale-chat-tunnel-cli-linux-x64 init --profile ~/.btun-relay --client-public-key CLIENT_PUBLIC_KEY
+systemctl --user restart btun-relay
 ```
 
-Configure your browser, OS, or application to use:
+Useful relay commands:
+
+```bash
+bale-chat-tunnel-cli-linux-x64 account list --profile ~/.btun-relay
+bale-chat-tunnel-cli-linux-x64 account add --profile ~/.btun-relay
+journalctl --user -u btun-relay -f
+```
+
+4. Configure your browser, OS, or app:
 
 ```text
 SOCKS5 127.0.0.1:1080
@@ -152,11 +151,7 @@ Common CLI commands:
 ./bale-chat-tunnel-cli-linux-x64 client --socks-port 1080
 ```
 
-Local source builds use their configured output path; replace the binary name in
-the examples with the path produced by your build.
-
-The desktop app provides the same setup flow through Settings and Home
-connection controls.
+Use the desktop app for the same setup flow from Settings and Home.
 
 ## Configuration
 
@@ -169,7 +164,7 @@ Important defaults:
 | Setting | Default |
 | --- | --- |
 | SOCKS endpoint | `127.0.0.1:1080` |
-| Transport preset | `stable` |
+| Transport | Adaptive |
 
 Use matching session IDs on both profiles, and make sure each profile has the
 other side's public key.
@@ -205,6 +200,7 @@ Main code locations:
 - `lib/src/btun/`: tunnel runtime, protocol, SOCKS5 server, relay, config, and transport.
 - `packages/bale_client/`: Bale authentication, messaging, and file APIs.
 - `scripts/install-relay.sh`: Linux x64 relay installer.
+- `scripts/uninstall-relay.sh`: Linux x64 relay uninstaller.
 
 ## Testing
 
@@ -227,9 +223,7 @@ make test
 
 Use GitHub Issues for bugs, build problems, feature requests, and UI feedback:
 
-```text
 https://github.com/evokelektrique/BaleChatTunnel/issues
-```
 
 ## License
 

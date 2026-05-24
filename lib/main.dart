@@ -268,7 +268,6 @@ class BtunAppController extends ChangeNotifier {
     int? chunkSize,
     int? pollMs,
     int? uploadRateLimit,
-    BtunTransportPreset? transportPreset,
   }) async {
     await _guard(() async {
       final current = config ?? BtunConfig.defaults(profileDir: profileDir);
@@ -277,10 +276,7 @@ class BtunAppController extends ChangeNotifier {
           sessionId.trim() != current.sessionId) {
         throw Exception('Stop the client before changing the session name.');
       }
-      final base = transportPreset == null
-          ? current
-          : current.applyTransportPreset(transportPreset);
-      final next = base.copyWith(
+      final next = current.copyWith(
         role: BtunRole.client,
         database: BtunConfig.defaultDatabasePath(profileDir),
         sessionId: sessionId?.trim().isEmpty ?? true
@@ -295,7 +291,6 @@ class BtunAppController extends ChangeNotifier {
         chunkSize: chunkSize,
         pollInterval: pollMs == null ? null : Duration(milliseconds: pollMs),
         uploadRateLimitPerMinute: uploadRateLimit,
-        transportPreset: transportPreset,
       );
       await next.save(configPath);
       config = next;
@@ -1059,7 +1054,6 @@ class _SettingsTabState extends State<SettingsTab> {
   late final TextEditingController chunkSize;
   late final TextEditingController pollMs;
   late final TextEditingController uploadRate;
-  var selectedPreset = BtunTransportPreset.stable;
   var accountBusy = false;
   Timer? saveDebounce;
 
@@ -1100,7 +1094,6 @@ class _SettingsTabState extends State<SettingsTab> {
     chunkSize.text = config.chunkSize.toString();
     pollMs.text = config.pollInterval.inMilliseconds.toString();
     uploadRate.text = config.uploadRateLimitPerMinute.toString();
-    selectedPreset = config.transportPreset;
   }
 
   @override
@@ -1382,35 +1375,7 @@ class _SettingsTabState extends State<SettingsTab> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                ResponsiveOptionGroup<BtunTransportPreset>(
-                  selected: selectedPreset,
-                  enabled: !disabled,
-                  options: const [
-                    OptionItem(
-                      value: BtunTransportPreset.interactive,
-                      icon: Icons.bolt,
-                      label: 'Interactive',
-                    ),
-                    OptionItem(
-                      value: BtunTransportPreset.stable,
-                      icon: Icons.speed,
-                      label: 'Stable',
-                    ),
-                    OptionItem(
-                      value: BtunTransportPreset.resilient,
-                      icon: Icons.shield_outlined,
-                      label: 'Resilient',
-                    ),
-                    OptionItem(
-                      value: BtunTransportPreset.custom,
-                      icon: Icons.tune,
-                      label: 'Custom',
-                    ),
-                  ],
-                  onChanged: _applyPreset,
-                ),
-                const SizedBox(height: 12),
-                PresetSummary(preset: selectedPreset, config: config),
+                AdaptiveSummary(config: config),
                 const SizedBox(height: 4),
                 Theme(
                   data: Theme.of(
@@ -1517,10 +1482,7 @@ class _SettingsTabState extends State<SettingsTab> {
     );
   }
 
-  Future<void> _save({
-    BtunTransportPreset? transportPreset,
-    bool includePerformance = false,
-  }) async {
+  Future<void> _save({bool includePerformance = false}) async {
     await widget.controller.saveConfig(
       sessionId: sessionId.text,
       peerPublicKey: peerKey.text,
@@ -1532,7 +1494,6 @@ class _SettingsTabState extends State<SettingsTab> {
       uploadRateLimit: includePerformance
           ? int.tryParse(uploadRate.text)
           : null,
-      transportPreset: transportPreset,
     );
   }
 
@@ -1549,29 +1510,11 @@ class _SettingsTabState extends State<SettingsTab> {
 
   void _scheduleCustomPerformanceSave() {
     if (widget.controller.isRunning) return;
-    setState(() => selectedPreset = BtunTransportPreset.custom);
     saveDebounce?.cancel();
     saveDebounce = Timer(
       const Duration(milliseconds: 450),
-      () => _save(
-        transportPreset: BtunTransportPreset.custom,
-        includePerformance: true,
-      ),
+      () => _save(includePerformance: true),
     );
-  }
-
-  Future<void> _applyPreset(BtunTransportPreset preset) async {
-    if (widget.controller.isRunning) return;
-    setState(() => selectedPreset = preset);
-    final spec = btunTransportPresetSpecs[preset];
-    if (spec != null) {
-      chunkSize.text = spec.chunkSize.toString();
-      maxInFlight.text = spec.maxInFlight.toString();
-      pollMs.text = spec.pollInterval.inMilliseconds.toString();
-      uploadRate.text = spec.uploadRateLimitPerMinute.toString();
-    }
-    await _save(transportPreset: preset);
-    _sync();
   }
 }
 
@@ -1737,27 +1680,26 @@ class ResponsiveOptionGroup<T> extends StatelessWidget {
   }
 }
 
-class PresetSummary extends StatelessWidget {
-  const PresetSummary({super.key, required this.preset, required this.config});
+class AdaptiveSummary extends StatelessWidget {
+  const AdaptiveSummary({super.key, required this.config});
 
-  final BtunTransportPreset preset;
   final BtunConfig? config;
 
   @override
   Widget build(BuildContext context) {
-    final spec = btunTransportPresetSpecs[preset];
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
-    final title = spec?.label ?? 'Custom';
-    final description =
-        spec?.description ?? 'Manual transport values are active.';
+    const title = 'Adaptive';
+    const description =
+        'Automatically runs fast and backs off when Bale or retry pressure rises.';
     final activeConfig = config;
     final details = activeConfig == null
-        ? 'Initialize config to save transport values.'
-        : '${_formatBytes(activeConfig.chunkSize)} chunks, '
-              '${_formatBytes(activeConfig.bulkChunkSize)} bulk, '
-              '${activeConfig.uploadRateLimitPerMinute}/min, '
-              '${activeConfig.uploadMinInterval.inMilliseconds}ms spacing';
+        ? 'Initialize config to save adaptive transport bounds.'
+        : '${_formatBytes(activeConfig.adaptive.minChunkSize)}-'
+              '${_formatBytes(activeConfig.adaptive.maxChunkSize)} chunks, '
+              '${activeConfig.adaptive.minUploadRatePerMinute}-'
+              '${activeConfig.adaptive.maxUploadRatePerMinute}/min, '
+              '${activeConfig.adaptive.maxStreams} streams';
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),

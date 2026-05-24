@@ -21,6 +21,20 @@ say() {
   printf 'btun installer: %s\n' "$*"
 }
 
+print_next_steps() {
+  say "next commands:"
+  say "  $install_dir/$binary_name account list --profile $profile"
+  say "  $install_dir/$binary_name account add --profile $profile"
+  say "  $install_dir/$binary_name init --profile $profile --client-public-key CLIENT_PUBLIC_KEY"
+  if command -v systemctl >/dev/null 2>&1 && [ "$install_service" != "0" ]; then
+    say "  systemctl --user restart $service_name"
+    say "  systemctl --user status $service_name"
+    say "  journalctl --user -u $service_name -f"
+  else
+    say "  $install_dir/$binary_name relay --profile $profile"
+  fi
+}
+
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
     say "missing required command: $1"
@@ -135,19 +149,22 @@ say "relay profile: $profile"
 
 if [ "$run_setup" = "0" ]; then
   say "setup skipped because BTUN_RUN_SETUP=0"
-  say "run: $install_dir/$binary_name setup --profile $profile"
+  say "run: $install_dir/$binary_name setup --profile $profile --role relay"
   if [ -z "$enable_service_was_set" ]; then
     enable_service=0
   fi
   install_systemd_service
+  print_next_steps
   exit 0
 fi
 
 say "starting interactive relay setup"
-say "relay role is selected automatically; log in to Bale when prompted, then copy the relay_public_key shown at the end"
+say "relay role is selected automatically"
+say "log in to Bale when prompted, then copy the relay_public_key"
 if [ -r /dev/tty ]; then
   "$install_dir/$binary_name" setup --profile "$profile" --role relay </dev/tty
   install_systemd_service
+  print_next_steps
   exit 0
 fi
 

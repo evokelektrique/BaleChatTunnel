@@ -127,128 +127,30 @@ class BtunSetupWizard {
           'empty now and add it after exchanging keys.',
     );
 
-    writeln('');
-    writeln('Client SOCKS');
-    final socksHost = await promptString(
-      'SOCKS host',
-      defaultValue: defaults.socksHost,
-      help: 'Host address for the local SOCKS5 listener used by client mode.',
-    );
-    final socksPort = await promptInt(
-      'SOCKS port',
-      defaultValue: defaults.socksPort,
-      min: 1,
-      max: 65535,
-      help: 'TCP port for the local SOCKS5 listener used by client mode.',
-    );
+    var socksHost = defaults.socksHost;
+    var socksPort = defaults.socksPort;
+    if (role == BtunRole.client) {
+      writeln('');
+      writeln('Client SOCKS');
+      socksHost = await promptString(
+        'SOCKS host',
+        defaultValue: defaults.socksHost,
+        help: 'Host address for the local SOCKS5 listener used by client mode.',
+      );
+      socksPort = await promptInt(
+        'SOCKS port',
+        defaultValue: defaults.socksPort,
+        min: 1,
+        max: 65535,
+        help: 'TCP port for the local SOCKS5 listener used by client mode.',
+      );
+    }
 
     writeln('');
     writeln('Transport/performance');
-    writeln('1) Interactive - lower latency with stream limits');
-    writeln('2) Stable - recommended');
-    writeln('3) Resilient - safest upload cadence');
-    writeln('4) Custom - edit every value');
-    final transportPreset = await promptTransportPreset(
-      'Stability preset number',
-      defaultValue: defaults.transportPreset,
-      help:
-          'Enter 1, 2, 3, or 4. Names still work: interactive, stable, '
-          'resilient, custom.',
-    );
-    final performanceDefaults = defaults.applyTransportPreset(transportPreset);
-    var chunkSize = performanceDefaults.chunkSize;
-    var bulkChunkSize = performanceDefaults.bulkChunkSize;
-    var maxInFlight = performanceDefaults.maxInFlight;
-    var pollMs = performanceDefaults.pollInterval.inMilliseconds;
-    var retryMs = performanceDefaults.retryTimeout.inMilliseconds;
-    var uploadMinMs = performanceDefaults.uploadMinInterval.inMilliseconds;
-    var uploadRate = performanceDefaults.uploadRateLimitPerMinute;
-    var ackMs = performanceDefaults.ackFlushInterval.inMilliseconds;
-    var flushMs = performanceDefaults.flushDelay.inMilliseconds;
-    var bulkFlushMs = performanceDefaults.bulkFlushDelay.inMilliseconds;
-    var maxRetryChunks = performanceDefaults.maxRetryChunks;
-    var maxRetryBytes = performanceDefaults.maxRetryBytes;
-    var maxStreams = performanceDefaults.maxStreams;
-    if (transportPreset == BtunTransportPreset.custom) {
-      chunkSize = await promptInt(
-        'Chunk size bytes',
-        defaultValue: defaults.chunkSize,
-        min: 1024,
-        help: 'Maximum payload size for regular tunnel chunks.',
-      );
-      bulkChunkSize = await promptInt(
-        'Bulk chunk size bytes',
-        defaultValue: defaults.bulkChunkSize,
-        min: 1024,
-        help: 'Maximum payload size for larger queued chunks.',
-      );
-      maxInFlight = await promptInt(
-        'Max in-flight uploads',
-        defaultValue: defaults.maxInFlight,
-        min: 1,
-        help: 'Maximum concurrent Saved Messages uploads.',
-      );
-      pollMs = await promptInt(
-        'Poll interval ms',
-        defaultValue: defaults.pollInterval.inMilliseconds,
-        min: 100,
-        help: 'How often to poll Saved Messages when updates are quiet.',
-      );
-      retryMs = await promptInt(
-        'Retry timeout ms',
-        defaultValue: defaults.retryTimeout.inMilliseconds,
-        min: 1000,
-        help: 'How long to wait before retrying unacknowledged chunks.',
-      );
-      uploadMinMs = await promptInt(
-        'Upload min interval ms',
-        defaultValue: defaults.uploadMinInterval.inMilliseconds,
-        min: 0,
-        help: 'Minimum spacing between uploads. Use 0 for no fixed delay.',
-      );
-      uploadRate = await promptInt(
-        'Upload rate limit per minute',
-        defaultValue: defaults.uploadRateLimitPerMinute,
-        min: 1,
-        help: 'Maximum upload attempts per minute.',
-      );
-      ackMs = await promptInt(
-        'ACK flush delay ms',
-        defaultValue: defaults.ackFlushInterval.inMilliseconds,
-        min: 0,
-        help: 'Delay used to batch acknowledgements before sending.',
-      );
-      flushMs = await promptInt(
-        'Flush delay ms',
-        defaultValue: defaults.flushDelay.inMilliseconds,
-        min: 0,
-        help: 'Delay used to batch ordinary frames before upload.',
-      );
-      bulkFlushMs = await promptInt(
-        'Bulk flush delay ms',
-        defaultValue: defaults.bulkFlushDelay.inMilliseconds,
-        min: 0,
-        help: 'Delay used to batch larger transfer frames before upload.',
-      );
-      maxRetryChunks = await promptInt(
-        'Max retry chunks',
-        defaultValue: defaults.maxRetryChunks,
-        min: 0,
-        help: 'Maximum number of chunks retained for retry.',
-      );
-      maxRetryBytes = await promptInt(
-        'Max retry bytes',
-        defaultValue: defaults.maxRetryBytes,
-        min: 0,
-        help: 'Maximum total bytes retained for retry.',
-      );
-      maxStreams = await promptInt(
-        'Max streams',
-        defaultValue: defaults.maxStreams,
-        min: 1,
-        help: 'Maximum concurrent tunnel streams.',
-      );
-    }
+    writeln('Adaptive transport is always enabled.');
+    final maxRetryChunks = defaults.maxRetryChunks;
+    final maxRetryBytes = defaults.maxRetryBytes;
 
     final config = defaults.copyWith(
       role: role,
@@ -259,20 +161,8 @@ class BtunSetupWizard {
       peerPublicKey: peerPublicKey,
       socksHost: socksHost,
       socksPort: socksPort,
-      chunkSize: chunkSize,
-      bulkChunkSize: bulkChunkSize,
-      maxInFlight: maxInFlight,
-      pollInterval: Duration(milliseconds: pollMs),
-      retryTimeout: Duration(milliseconds: retryMs),
-      uploadMinInterval: Duration(milliseconds: uploadMinMs),
-      uploadRateLimitPerMinute: uploadRate,
-      ackFlushInterval: Duration(milliseconds: ackMs),
-      flushDelay: Duration(milliseconds: flushMs),
-      bulkFlushDelay: Duration(milliseconds: bulkFlushMs),
-      transportPreset: transportPreset,
       maxRetryChunks: maxRetryChunks,
       maxRetryBytes: maxRetryBytes,
-      maxStreams: maxStreams,
     );
     var nextConfig = config;
     await nextConfig.save(configPath);
@@ -382,19 +272,6 @@ class BtunSetupWizard {
     );
   }
 
-  Future<BtunTransportPreset> promptTransportPreset(
-    String label, {
-    required BtunTransportPreset defaultValue,
-    String? help,
-  }) {
-    return _prompt<BtunTransportPreset>(
-      label,
-      defaultText: defaultValue.name,
-      help: help,
-      parse: (input) => parseTransportPreset(input, defaultValue: defaultValue),
-    );
-  }
-
   Future<bool> promptBool(
     String label, {
     required bool defaultValue,
@@ -467,36 +344,6 @@ bool parseBool(String input, {required bool defaultValue}) {
   if (value == 'y' || value == 'yes' || value == 'true') return true;
   if (value == 'n' || value == 'no' || value == 'false') return false;
   throw const FormatException('enter y/n, yes/no, or true/false');
-}
-
-BtunTransportPreset parseTransportPreset(
-  String input, {
-  required BtunTransportPreset defaultValue,
-}) {
-  final value = input.trim().toLowerCase();
-  if (value.isEmpty) return defaultValue;
-  return switch (value) {
-    '1' ||
-    'interactive' ||
-    'i' ||
-    'responsive' ||
-    'fast' => BtunTransportPreset.interactive,
-    '2' ||
-    'stable' ||
-    's' ||
-    'balanced' ||
-    'balance' ||
-    'medium' => BtunTransportPreset.stable,
-    '3' ||
-    'resilient' ||
-    'r' ||
-    'conservative' ||
-    'slow' => BtunTransportPreset.resilient,
-    '4' || 'custom' => BtunTransportPreset.custom,
-    _ => throw const FormatException(
-      'enter 1, 2, 3, 4, or one of: interactive, stable, resilient, custom',
-    ),
-  };
 }
 
 int parseInt(String input, {required int defaultValue, int? min, int? max}) {
