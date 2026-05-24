@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:io';
-
 import 'package:bale_client/bale_client.dart';
 
 import 'logger.dart';
@@ -41,6 +39,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   StreamSubscription<BaleUpdate>? _updates;
   Timer? _pollTimer;
   bool _polling = false;
+  var _closing = false;
   DateTime? _backoffUntil;
   var _rateLimitFailures = 0;
   Completer<void>? _backoffCompleter;
@@ -49,13 +48,16 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   var _activeUploads = 0;
   DateTime? _lastUploadAt;
   final _queuedUploads = <int, Future<void>>{};
-  final _downloadRetryAfter = <String, DateTime>{};
+  final _downloadBackoffUntil = <String, DateTime>{};
+  final _activeDownloads = <String, Future<void>>{};
+  Future<void> _downloadTail = Future.value();
   final _uploadWindow = <DateTime>[];
   Future<void> _uploadSlotTail = Future.value();
   var _adaptiveUploadRateLimit = 0;
   var _rateLimitEvents = 0;
   var _transientHttpEvents = 0;
-  Timer? _uploadRateRecoveryTimer;
+  var _adaptiveConcurrentUploads = 1;
+  var _successfulUploadStreak = 0;
 
   @override
   bool get isBackingOff {
@@ -80,8 +82,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         unawaited(_maybeDownload(message));
       }
     });
-    _pollTimer = Timer.periodic(pollInterval, (_) => unawaited(_poll()));
-    unawaited(_poll());
+    _scheduleNextPoll(Duration.zero);
   }
 
   void updateSettings({
@@ -96,9 +97,12 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     this.uploadMinInterval = uploadMinInterval;
     this.uploadRateLimitPerMinute = uploadRateLimitPerMinute;
     this.maxConcurrentUploads = maxConcurrentUploads;
+    _adaptiveUploadRateLimit = _initialAdaptiveUploadRateLimit;
+    _adaptiveConcurrentUploads = 1;
+    _successfulUploadStreak = 0;
     if (pollChanged && _updates != null) {
       _pollTimer?.cancel();
-      _pollTimer = Timer.periodic(pollInterval, (_) => unawaited(_poll()));
+      _scheduleNextPoll();
     }
     _pumpUploads();
   }
@@ -129,7 +133,15 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   }
 
   void _pumpUploads() {
-    final limit = maxConcurrentUploads <= 0 ? 1 : maxConcurrentUploads;
+    final configuredLimit = maxConcurrentUploads <= 0
+        ? 1
+        : maxConcurrentUploads;
+    final adaptiveLimit = _adaptiveConcurrentUploads <= 0
+        ? 1
+        : _adaptiveConcurrentUploads;
+    final limit = configuredLimit < adaptiveLimit
+        ? configuredLimit
+        : adaptiveLimit;
     while (_activeUploads < limit && _pendingUploads.isNotEmpty) {
       final upload = _pendingUploads.removeAt(0);
       _activeUploads += 1;
@@ -167,6 +179,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     logger.info(
       'sent upload seq=${file.sequenceNumber} bytes=${file.bytes.length}',
     );
+    _recordUploadSuccess();
     _logUploadWindowStats();
   }
 
@@ -223,7 +236,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   }
 
   Future<void> _poll() async {
-    if (_polling) return;
+    if (_closing || _polling) return;
     _polling = true;
     try {
       final messages = await _withRateLimitBackoff(
@@ -237,6 +250,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
       logger.warn('Saved Messages poll failed: $error');
     } finally {
       _polling = false;
+      _scheduleNextPoll();
     }
   }
 
@@ -249,8 +263,27 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         ? message.messageId.toString()
         : '$accountUserId:${message.messageId}';
     if (stateDb.hasProcessedMessage(messageId)) return;
-    final retryAfter = _downloadRetryAfter[messageId];
-    if (retryAfter != null && DateTime.now().isBefore(retryAfter)) return;
+    final active = _activeDownloads[messageId];
+    if (active != null) {
+      await active;
+      return;
+    }
+    final downloadBackoffUntil = _downloadBackoffUntil[messageId];
+    if (downloadBackoffUntil != null &&
+        DateTime.now().isBefore(downloadBackoffUntil)) {
+      return;
+    }
+    final download = _downloadTail.then(
+      (_) => _downloadMessage(messageId, message),
+    );
+    _activeDownloads[messageId] = download;
+    _downloadTail = download.catchError((_) {});
+    await download.whenComplete(() => _activeDownloads.remove(messageId));
+  }
+
+  Future<void> _downloadMessage(String messageId, BaleMessage message) async {
+    final document = message.document;
+    if (document == null) return;
     try {
       final bytes = await _withRateLimitBackoff(
         'download ${document.name}',
@@ -259,7 +292,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
           accessHash: document.accessHash,
         ),
       );
-      _downloadRetryAfter.remove(messageId);
+      _downloadBackoffUntil.remove(messageId);
       stateDb.markProcessedMessage(messageId);
       _incoming.add(
         IncomingTunnelFile(
@@ -269,7 +302,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         ),
       );
     } on Object catch (error) {
-      _downloadRetryAfter[messageId] = DateTime.now().add(
+      _downloadBackoffUntil[messageId] = DateTime.now().add(
         const Duration(seconds: 60),
       );
       logger.warn('download failed for message ${message.messageId}: $error');
@@ -361,8 +394,15 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   }
 
   int get _currentUploadRateLimit {
-    if (_adaptiveUploadRateLimit > 0) return _adaptiveUploadRateLimit;
-    return uploadRateLimitPerMinute;
+    if (_adaptiveUploadRateLimit <= 0) {
+      _adaptiveUploadRateLimit = _initialAdaptiveUploadRateLimit;
+    }
+    return _adaptiveUploadRateLimit;
+  }
+
+  int get _initialAdaptiveUploadRateLimit {
+    final base = uploadRateLimitPerMinute <= 0 ? 1 : uploadRateLimitPerMinute;
+    return base < 30 ? base : 30;
   }
 
   void _lowerUploadRateLimit() {
@@ -370,38 +410,32 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     final current = _currentUploadRateLimit <= 0
         ? base
         : _currentUploadRateLimit;
-    _adaptiveUploadRateLimit = (current / 2).floor().clamp(1, base).toInt();
-    _uploadRateRecoveryTimer?.cancel();
-    _uploadRateRecoveryTimer = Timer(const Duration(minutes: 2), () {
-      if (_adaptiveUploadRateLimit <= 0) return;
-      _adaptiveUploadRateLimit = (_adaptiveUploadRateLimit + 5)
-          .clamp(1, base)
-          .toInt();
-      if (_adaptiveUploadRateLimit >= base) {
-        _adaptiveUploadRateLimit = 0;
-        _uploadRateRecoveryTimer = null;
-      } else {
-        _lowerUploadRateRecoveryOnly(base);
-      }
-    });
+    _adaptiveUploadRateLimit = (current / 2).floor().clamp(5, base).toInt();
+    _adaptiveConcurrentUploads = 1;
+    _successfulUploadStreak = 0;
     logger.warn(
-      'adaptive upload rate lowered to $_adaptiveUploadRateLimit/min',
+      'adaptive upload pressure lowered to $_adaptiveUploadRateLimit/min '
+      'concurrency=$_adaptiveConcurrentUploads',
     );
   }
 
-  void _lowerUploadRateRecoveryOnly(int base) {
-    _uploadRateRecoveryTimer?.cancel();
-    _uploadRateRecoveryTimer = Timer(const Duration(minutes: 2), () {
+  void _recordUploadSuccess() {
+    final base = uploadRateLimitPerMinute <= 0 ? 1 : uploadRateLimitPerMinute;
+    _successfulUploadStreak += 1;
+    if (_successfulUploadStreak < 12) return;
+    _successfulUploadStreak = 0;
+    if (_adaptiveUploadRateLimit < base) {
       _adaptiveUploadRateLimit = (_adaptiveUploadRateLimit + 5)
           .clamp(1, base)
           .toInt();
-      if (_adaptiveUploadRateLimit >= base) {
-        _adaptiveUploadRateLimit = 0;
-        _uploadRateRecoveryTimer = null;
-      } else {
-        _lowerUploadRateRecoveryOnly(base);
-      }
-    });
+    }
+    final configuredLimit = maxConcurrentUploads <= 0
+        ? 1
+        : maxConcurrentUploads;
+    if (_pendingUploads.isNotEmpty &&
+        _adaptiveConcurrentUploads < configuredLimit) {
+      _adaptiveConcurrentUploads += 1;
+    }
   }
 
   void _logUploadWindowStats() {
@@ -424,7 +458,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     } else {
       _transientHttpEvents += 1;
     }
-    if (rateLimit && operation.startsWith('send ')) {
+    if (operation.startsWith('send ')) {
       _lowerUploadRateLimit();
     }
     if (operation.startsWith('poll ') || operation.startsWith('download ')) {
@@ -440,8 +474,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
             },
           )
         : const Duration(seconds: 60);
-    final retryAfter = retryAfterDelay(error);
-    final delay = retryAfter ?? fallback;
+    final delay = fallback;
     final until = DateTime.now().add(delay);
     final current = _backoffUntil;
     if (current == null || until.isAfter(current)) {
@@ -459,10 +492,8 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         _backoffToken = null;
       });
       final reason = rateLimit ? 'rate limited' : 'HTTP 500/transient error';
-      final source = retryAfter == null ? 'fallback' : 'retry-after';
       logger.warn(
         'Bale $reason during $operation; backing off ${delay.inSeconds}s '
-        'source=$source '
         'account=${accountUserId ?? 'unknown'} '
         '(rate_limits=$_rateLimitEvents transient_http=$_transientHttpEvents)',
       );
@@ -496,17 +527,36 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     pollInterval = next;
     if (_updates == null) return;
     _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(pollInterval, (_) => unawaited(_poll()));
+    _scheduleNextPoll();
     logger.info(
       'adaptive poll interval ${pollInterval.inMilliseconds}ms '
       'account=${accountUserId ?? 'unknown'}',
     );
   }
 
+  void _scheduleNextPoll([Duration? delay]) {
+    if (_closing || _updates == null) return;
+    _pollTimer?.cancel();
+    final nextDelay = delay ?? pollInterval + _pollJitter;
+    _pollTimer = Timer(nextDelay, () {
+      _pollTimer = null;
+      unawaited(_poll());
+    });
+  }
+
+  Duration get _pollJitter {
+    final baseMs = pollInterval.inMilliseconds;
+    if (baseMs <= 1) return Duration.zero;
+    final account =
+        accountUserId ?? client.session?.userId ?? sessionId.hashCode;
+    final maxJitterMs = (baseMs ~/ 5).clamp(1, 250);
+    return Duration(milliseconds: account.abs() % (maxJitterMs + 1));
+  }
+
   @override
   Future<void> close() async {
+    _closing = true;
     _pollTimer?.cancel();
-    _uploadRateRecoveryTimer?.cancel();
     await _updates?.cancel();
     await _incoming.close();
   }
@@ -691,32 +741,4 @@ bool isBaleTransientHttpError(Object error) {
       text.contains('HTTP 502') ||
       text.contains('HTTP 503') ||
       text.contains('HTTP 504');
-}
-
-Duration? retryAfterDelay(Object error, {DateTime? now}) {
-  if (error is! BaleHttpException) return null;
-  final value = error.headers['retry-after']?.trim();
-  if (value == null || value.isEmpty) return null;
-  final seconds = int.tryParse(value);
-  if (seconds != null) {
-    if (seconds <= 0) return null;
-    return _clampRetryAfter(Duration(seconds: seconds));
-  }
-  final DateTime retryAt;
-  try {
-    retryAt = HttpDate.parse(value);
-  } on Exception {
-    return null;
-  }
-  final delay = retryAt.difference(now ?? DateTime.now());
-  if (delay <= Duration.zero) return null;
-  return _clampRetryAfter(delay);
-}
-
-Duration _clampRetryAfter(Duration delay) {
-  const min = Duration(seconds: 1);
-  const max = Duration(minutes: 30);
-  if (delay < min) return min;
-  if (delay > max) return max;
-  return delay;
 }

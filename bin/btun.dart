@@ -560,7 +560,9 @@ class BtunCli {
       maxRetryBytes: config.maxRetryBytes,
       flushDelay: config.flushDelay,
       bulkFlushDelay: config.bulkFlushDelay,
-      ackDelay: config.ackFlushInterval,
+      interactiveFlushDelay: config.flushDelay,
+      controlFlushDelay: const Duration(milliseconds: 100),
+      ackDelay: config.maxAckFlushInterval,
     );
     return BtunRuntime(
       config,

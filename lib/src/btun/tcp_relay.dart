@@ -73,6 +73,7 @@ class TcpRelay {
       stream.pendingData.clear();
       if (stream.closeAfterOpen) {
         await socket.close();
+        await _sendClose(frame.streamId);
         return;
       }
       socket.listen(

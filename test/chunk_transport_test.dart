@@ -711,6 +711,115 @@ void main() {
     await chunkTransport.close();
   });
 
+  test('chunk transport treats ack numbers as exact chunk receipts', () async {
+    final temp = await Directory.systemTemp.createTemp('btun_exact_ack_test_');
+    addTearDown(() => temp.delete(recursive: true));
+    final clientKeys = await BtunCrypto.generateKeyPair();
+    final relayKeys = await BtunCrypto.generateKeyPair();
+    final clientConfig = BtunConfig.defaults(profileDir: temp.path).copyWith(
+      sessionId: 'testsession',
+      localPublicKey: clientKeys.publicKey,
+      localPrivateKey: clientKeys.privateKey,
+      peerPublicKey: relayKeys.publicKey,
+      chunkSize: 1024 * 1024,
+    );
+    final relayConfig = BtunConfig.defaults(profileDir: temp.path).copyWith(
+      sessionId: 'testsession',
+      localPublicKey: relayKeys.publicKey,
+      localPrivateKey: relayKeys.privateKey,
+      peerPublicKey: clientKeys.publicKey,
+    );
+    final transport = _FakeTransport();
+    final chunkTransport = ChunkTransport(
+      transport: transport,
+      crypto: await BtunCrypto.fromConfig(
+        clientConfig,
+        send: Direction.c2r,
+        receive: Direction.r2c,
+      ),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      sessionId: clientConfig.sessionId,
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      chunkSize: clientConfig.chunkSize,
+      retryTimeout: Duration.zero,
+      maxInFlight: 10,
+      logger: const Logger(),
+      flushDelay: const Duration(minutes: 1),
+      retryTick: const Duration(milliseconds: 20),
+    );
+    await chunkTransport.start();
+
+    await chunkTransport.sendFrame(
+      TunnelFrame.data(
+        sessionId: clientConfig.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 1,
+        payload: [1],
+      ),
+    );
+    await chunkTransport.flush();
+    await chunkTransport.sendFrame(
+      TunnelFrame.data(
+        sessionId: clientConfig.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 2,
+        payload: [2],
+      ),
+    );
+    await chunkTransport.flush();
+    final firstSequence = transport.sent[0].sequenceNumber;
+    final secondSequence = transport.sent[1].sequenceNumber;
+
+    final relayCrypto = await BtunCrypto.fromConfig(
+      relayConfig,
+      send: Direction.r2c,
+      receive: Direction.c2r,
+    );
+    final incoming = await relayCrypto.encrypt(
+      PlainChunk(
+        version: 1,
+        sessionId: clientConfig.sessionId,
+        direction: Direction.r2c,
+        sequenceNumber: 1,
+        frames: [
+          TunnelFrame.ack(
+            sessionId: clientConfig.sessionId,
+            direction: Direction.r2c,
+            ackNumber: secondSequence,
+          ),
+        ],
+      ),
+    );
+    transport.addIncoming(
+      IncomingTunnelFile(
+        messageId: 'remote-ack',
+        fileName: btunFileName(clientConfig.sessionId, Direction.r2c, 1),
+        bytes: incoming.encode(),
+      ),
+    );
+
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+
+    expect(
+      transport.sent
+          .skip(2)
+          .map((file) => file.sequenceNumber)
+          .contains(firstSequence),
+      isTrue,
+    );
+    expect(
+      transport.sent
+          .skip(2)
+          .map((file) => file.sequenceNumber)
+          .contains(secondSequence),
+      isFalse,
+    );
+    await chunkTransport.close();
+  });
+
   test('chunk transport piggybacks pending ack onto outgoing data', () async {
     final temp = await Directory.systemTemp.createTemp('btun_ack_test_');
     addTearDown(() => temp.delete(recursive: true));
@@ -824,55 +933,6 @@ void main() {
       isBaleTransientHttpError(Exception('Download failed with HTTP 404')),
       isFalse,
     );
-  });
-
-  test('retry-after delay parses seconds and HTTP dates', () {
-    final now = DateTime.utc(2026, 5, 24, 10);
-    expect(
-      retryAfterDelay(
-        BaleHttpException(
-          'Upload failed with HTTP 429',
-          stage: 'upload',
-          statusCode: 429,
-          host: 'example.com',
-          elapsed: Duration.zero,
-          headers: const {'retry-after': '45'},
-        ),
-        now: now,
-      ),
-      const Duration(seconds: 45),
-    );
-    expect(
-      retryAfterDelay(
-        BaleHttpException(
-          'Upload failed with HTTP 429',
-          stage: 'upload',
-          statusCode: 429,
-          host: 'example.com',
-          elapsed: Duration.zero,
-          headers: const {'retry-after': 'Sun, 24 May 2026 10:02:00 GMT'},
-        ),
-        now: now,
-      ),
-      const Duration(minutes: 2),
-    );
-  });
-
-  test('retry-after delay ignores missing or invalid values', () {
-    expect(
-      retryAfterDelay(
-        BaleHttpException(
-          'Upload failed with HTTP 429',
-          stage: 'upload',
-          statusCode: 429,
-          host: 'example.com',
-          elapsed: Duration.zero,
-          headers: const {'retry-after': 'invalid'},
-        ),
-      ),
-      isNull,
-    );
-    expect(retryAfterDelay(Exception('HTTP 429')), isNull);
   });
 
   test(
@@ -1048,12 +1108,12 @@ void main() {
 
     expect(config.adaptive, BtunAdaptiveConfig.defaults);
     expect(config.chunkSize, 64 * 1024);
-    expect(config.maxInFlight, 3);
-    expect(config.pollInterval, const Duration(milliseconds: 300));
+    expect(config.maxInFlight, 1);
+    expect(config.pollInterval, const Duration(milliseconds: 1000));
     expect(config.uploadMinInterval, Duration.zero);
-    expect(config.uploadRateLimitPerMinute, 70);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 20));
-    expect(config.flushDelay, Duration.zero);
+    expect(config.uploadRateLimitPerMinute, 50);
+    expect(config.ackFlushInterval, const Duration(milliseconds: 200));
+    expect(config.flushDelay, const Duration(milliseconds: 50));
     expect(config.bulkFlushDelay, const Duration(milliseconds: 250));
     expect(config.bulkChunkSize, 1024 * 1024);
     expect(config.maxRetryChunks, 64);
@@ -1071,7 +1131,7 @@ void main() {
       'upload_rate_limit_per_minute': 40,
     });
 
-    expect(config.uploadRateLimitPerMinute, 70);
+    expect(config.uploadRateLimitPerMinute, 50);
   });
 
   test('config defaults use adaptive fast bounds', () {
@@ -1079,12 +1139,12 @@ void main() {
 
     expect(config.adaptive, BtunAdaptiveConfig.defaults);
     expect(config.chunkSize, 64 * 1024);
-    expect(config.maxInFlight, 3);
-    expect(config.pollInterval, const Duration(milliseconds: 300));
+    expect(config.maxInFlight, 1);
+    expect(config.pollInterval, const Duration(milliseconds: 1000));
     expect(config.uploadMinInterval, Duration.zero);
-    expect(config.uploadRateLimitPerMinute, 70);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 20));
-    expect(config.flushDelay, Duration.zero);
+    expect(config.uploadRateLimitPerMinute, 50);
+    expect(config.ackFlushInterval, const Duration(milliseconds: 200));
+    expect(config.flushDelay, const Duration(milliseconds: 50));
     expect(config.bulkFlushDelay, const Duration(milliseconds: 250));
     expect(config.bulkChunkSize, 1024 * 1024);
     expect(config.maxRetryChunks, 64);

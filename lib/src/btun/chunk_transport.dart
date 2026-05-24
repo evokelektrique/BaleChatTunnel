@@ -73,7 +73,7 @@ class ChunkTransport {
   final _retryCache = <int, _RetryChunk>{};
   var _retryCacheBytes = 0;
   var _queuedBytes = 0;
-  int? _pendingAck;
+  final _pendingAcks = <int>{};
   var _nextSequence = DateTime.now().millisecondsSinceEpoch;
   var _closed = false;
 
@@ -141,16 +141,18 @@ class ChunkTransport {
     final frames = <TunnelFrame>[..._queuedFrames];
     _queuedFrames.clear();
     _queuedBytes = 0;
-    final ackNumber = _pendingAck;
-    if (ackNumber != null) {
-      frames.add(
-        TunnelFrame.ack(
-          sessionId: sessionId,
-          direction: sendDirection,
-          ackNumber: ackNumber,
-        ),
-      );
-      _pendingAck = null;
+    final ackNumbers = _pendingAcks.toList()..sort();
+    if (ackNumbers.isNotEmpty) {
+      for (final ackNumber in ackNumbers) {
+        frames.add(
+          TunnelFrame.ack(
+            sessionId: sessionId,
+            direction: sendDirection,
+            ackNumber: ackNumber,
+          ),
+        );
+      }
+      _pendingAcks.clear();
       _ackTimer?.cancel();
       _ackTimer = null;
     }
@@ -232,12 +234,9 @@ class ChunkTransport {
   }
 
   void _scheduleAck(int sequenceNumber) {
-    final pending = _pendingAck;
-    if (pending == null || sequenceNumber > pending) {
-      _pendingAck = sequenceNumber;
-    }
+    _pendingAcks.add(sequenceNumber);
     if (_queuedFrames.isNotEmpty) {
-      _scheduleFlush(flushDelay);
+      _scheduleFlush(_shorterDelay(flushDelay, ackDelay));
       return;
     }
     if (ackDelay == Duration.zero) {
@@ -303,12 +302,8 @@ class ChunkTransport {
   }
 
   void _markRetryAcked(int ackNumber) {
-    for (final sequence in _retryCache.keys.toList()) {
-      if (sequence <= ackNumber) {
-        final removed = _retryCache.remove(sequence);
-        if (removed != null) _retryCacheBytes -= removed.bytes.length;
-      }
-    }
+    final removed = _retryCache.remove(ackNumber);
+    if (removed != null) _retryCacheBytes -= removed.bytes.length;
   }
 
   void _trimRetryCache() {

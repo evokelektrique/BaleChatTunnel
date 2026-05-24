@@ -78,12 +78,64 @@ void main() {
   });
 
   test(
-    'load balanced transport retries same file after temporary account failure',
+    'load balanced transport retries same file after account rate limit',
     () async {
       final first = _FakeTransport(
         temporaryFailure: const BtunAccountTemporarilyUnavailable(
           operation: 'send file-1',
           reason: 'rate limited',
+          accountUserId: 11,
+        ),
+      );
+      final second = _FakeTransport();
+      final transport = LoadBalancedSavedMessagesTransport(
+        transports: [first, second],
+        logger: const Logger(),
+      );
+      await transport.start();
+
+      await transport.sendFile(
+        const OutgoingTunnelFile(
+          fileName: 'file-1',
+          bytes: [1],
+          sequenceNumber: 1,
+          direction: Direction.c2r,
+        ),
+      );
+
+      expect(first.sent.map((file) => file.sequenceNumber), [1]);
+      expect(second.sent.map((file) => file.sequenceNumber), [1]);
+      await transport.close();
+    },
+  );
+
+  test('temporary unavailable text uses backoff_until label', () {
+    final error = BtunAccountTemporarilyUnavailable(
+      operation: 'send file-1',
+      reason: 'rate limited',
+      accountUserId: 11,
+      retryAfter: DateTime.utc(2026),
+    );
+
+    expect(error.toString(), contains('backoff_until=2026-01-01'));
+    expect(
+      error.toString(),
+      isNot(
+        contains(
+          'retry'
+          '_after',
+        ),
+      ),
+    );
+  });
+
+  test(
+    'load balanced transport retries same file after non-rate temporary failure',
+    () async {
+      final first = _FakeTransport(
+        temporaryFailure: const BtunAccountTemporarilyUnavailable(
+          operation: 'send file-1',
+          reason: 'transient HTTP error',
           accountUserId: 11,
         ),
       );

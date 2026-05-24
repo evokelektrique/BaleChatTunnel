@@ -51,16 +51,20 @@ class Socks5Server {
         onError: (_) => socket.destroy(),
       );
       late final StreamSubscription<List<int>> localSub;
+      Future<void>? pendingCloseWrite;
       localSub = reader.release().listen(
         (data) {
           localSub.pause(remote!.add(data).catchError((Object _) {}));
         },
-        onDone: () => unawaited(remote!.closeWrite().catchError((Object _) {})),
+        onDone: () {
+          pendingCloseWrite = remote!.closeWrite().catchError((Object _) {});
+        },
         onError: (_) => unawaited(
           remote!.reset('local socket error').catchError((Object _) {}),
         ),
       );
       await Future.any([remote.incoming.drain<void>(), socket.done]);
+      await pendingCloseWrite;
       await localSub.cancel();
       await remoteSub.cancel();
     } on Object catch (error) {
@@ -71,6 +75,7 @@ class Socks5Server {
         socket.add([0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
       } catch (_) {}
     } finally {
+      await remote?.closeWrite().catchError((Object _) {});
       await remote?.close();
       await reader?.cancel();
       socket.destroy();
