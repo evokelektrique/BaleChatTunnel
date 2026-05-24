@@ -15,29 +15,42 @@ class BtunClient {
   final ChunkTransport chunkTransport;
   final _random = Random.secure();
   final _streams = <int, BtunStream>{};
+  final _slotWaiters = <Completer<void>>[];
   late final StreamSubscription<TunnelFrame> _sub;
 
-  Future<BtunStream> open(String host, int port) async {
+  Future<BtunStream> open(
+    String host,
+    int port, {
+    Duration slotTimeout = const Duration(seconds: 30),
+  }) async {
+    await _waitForStreamSlot(slotTimeout);
     final streamId = _nextStreamId();
     final stream = BtunStream._(
       streamId: streamId,
       host: host,
       port: port,
+      waitWritable: chunkTransport.waitUntilWritable,
       sendData: (bytes) => _sendData(streamId, bytes),
       closeRemote: () => _sendClose(streamId),
       resetRemote: (message) => _sendReset(streamId, message),
+      onClosed: () => _removeStream(streamId),
     );
     _streams[streamId] = stream;
-    await chunkTransport.sendFrame(
-      TunnelFrame.open(
-        sessionId: config.sessionId,
-        direction: Direction.c2r,
-        streamId: streamId,
-        sequenceNumber: chunkTransport.allocateSequence(),
-        host: host,
-        port: port,
-      ),
-    );
+    try {
+      await chunkTransport.sendFrame(
+        TunnelFrame.open(
+          sessionId: config.sessionId,
+          direction: Direction.c2r,
+          streamId: streamId,
+          sequenceNumber: chunkTransport.allocateSequence(),
+          host: host,
+          port: port,
+        ),
+      );
+    } on Object {
+      _removeStream(streamId);
+      rethrow;
+    }
     return stream;
   }
 
@@ -77,11 +90,11 @@ class BtunClient {
         stream!._add(frame.payload);
       case FrameType.close:
         stream!._closeIncoming();
-        _streams.remove(frame.streamId);
+        _removeStream(frame.streamId);
       case FrameType.reset:
       case FrameType.error:
         stream!._error(frame.message ?? 'remote reset');
-        _streams.remove(frame.streamId);
+        _removeStream(frame.streamId);
       case FrameType.open:
       case FrameType.ack:
       case FrameType.hello:
@@ -135,10 +148,47 @@ class BtunClient {
     return id;
   }
 
+  Future<void> _waitForStreamSlot(Duration timeout) async {
+    final limit = config.maxStreams <= 0 ? 1 : config.maxStreams;
+    final deadline = DateTime.now().add(timeout);
+    while (_streams.length >= limit) {
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= Duration.zero) {
+        throw TimeoutException(
+          'timed out waiting for a tunnel stream slot',
+          timeout,
+        );
+      }
+      final waiter = Completer<void>();
+      _slotWaiters.add(waiter);
+      try {
+        await waiter.future.timeout(remaining);
+      } on TimeoutException {
+        _slotWaiters.remove(waiter);
+        rethrow;
+      }
+    }
+  }
+
+  void _removeStream(int streamId) {
+    if (_streams.remove(streamId) == null) return;
+    while (_slotWaiters.isNotEmpty) {
+      final waiter = _slotWaiters.removeAt(0);
+      if (!waiter.isCompleted) {
+        waiter.complete();
+        break;
+      }
+    }
+  }
+
   Future<void> close() async {
     for (final stream in _streams.values.toList()) {
       await stream.close();
     }
+    for (final waiter in _slotWaiters.toList()) {
+      if (!waiter.isCompleted) waiter.complete();
+    }
+    _slotWaiters.clear();
     await _sub.cancel();
   }
 }
@@ -148,19 +198,25 @@ class BtunStream {
     required this.streamId,
     required this.host,
     required this.port,
+    required Future<void> Function() waitWritable,
     required Future<void> Function(List<int>) sendData,
     required Future<void> Function() closeRemote,
     required Future<void> Function(String) resetRemote,
-  }) : _sendData = sendData,
+    required void Function() onClosed,
+  }) : _waitWritable = waitWritable,
+       _sendData = sendData,
        _closeRemote = closeRemote,
-       _resetRemote = resetRemote;
+       _resetRemote = resetRemote,
+       _onClosed = onClosed;
 
   final int streamId;
   final String host;
   final int port;
+  final Future<void> Function() _waitWritable;
   final Future<void> Function(List<int>) _sendData;
   final Future<void> Function() _closeRemote;
   final Future<void> Function(String) _resetRemote;
+  final void Function() _onClosed;
   final StreamController<List<int>> _incoming =
       StreamController<List<int>>.broadcast();
   var _closed = false;
@@ -170,6 +226,7 @@ class BtunStream {
 
   Future<void> add(List<int> bytes) async {
     if (_closed || bytes.isEmpty) return;
+    await _waitUntilWritable();
     await _sendData(bytes);
   }
 
@@ -179,13 +236,19 @@ class BtunStream {
     await _closeRemote();
   }
 
-  Future<void> reset(String message) => _resetRemote(message);
+  Future<void> reset(String message) async {
+    if (_closed) return;
+    _closed = true;
+    _onClosed();
+    await _resetRemote(message);
+  }
 
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
     await closeWrite();
     await _incoming.close();
+    _onClosed();
   }
 
   void _add(List<int> bytes) {
@@ -195,6 +258,7 @@ class BtunStream {
   void _closeIncoming() {
     _closed = true;
     if (!_incoming.isClosed) _incoming.close();
+    _onClosed();
   }
 
   void _error(String message) {
@@ -203,5 +267,8 @@ class BtunStream {
       _incoming.addError(Exception(message));
       _incoming.close();
     }
+    _onClosed();
   }
+
+  Future<void> _waitUntilWritable() => _waitWritable();
 }

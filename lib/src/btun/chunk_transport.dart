@@ -79,6 +79,18 @@ class ChunkTransport {
 
   Stream<TunnelFrame> get frames => _frames.stream;
 
+  bool get isCongested =>
+      transport.isBackingOff ||
+      _retryCache.length >= maxRetryChunks ||
+      _retryCacheBytes >= maxRetryBytes ||
+      _queuedBytes >= chunkSize * 2;
+
+  Future<void> waitUntilWritable() async {
+    while (!_closed && isCongested) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+  }
+
   Future<void> start() async {
     await transport.start();
     _incomingSub = transport.incomingFiles().listen((file) {

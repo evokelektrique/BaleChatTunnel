@@ -144,7 +144,7 @@ class BtunSetupWizard {
 
     writeln('');
     writeln('Transport/performance');
-    writeln('1) Interactive - responsive stable chat cadence');
+    writeln('1) Interactive - lower latency with stream limits');
     writeln('2) Stable - recommended');
     writeln('3) Resilient - safest upload cadence');
     writeln('4) Custom - edit every value');

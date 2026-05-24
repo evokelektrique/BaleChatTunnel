@@ -47,11 +47,14 @@ class Socks5Server {
             socket.destroy();
           }
         },
-        onDone: () => socket.destroy(),
+        onDone: () => unawaited(socket.close().catchError((Object _) {})),
         onError: (_) => socket.destroy(),
       );
-      final localSub = reader.release().listen(
-        (data) => unawaited(remote!.add(data).catchError((Object _) {})),
+      late final StreamSubscription<List<int>> localSub;
+      localSub = reader.release().listen(
+        (data) {
+          localSub.pause(remote!.add(data).catchError((Object _) {}));
+        },
         onDone: () => unawaited(remote!.closeWrite().catchError((Object _) {})),
         onError: (_) => unawaited(
           remote!.reset('local socket error').catchError((Object _) {}),

@@ -979,6 +979,63 @@ void main() {
     await transport.close();
   });
 
+  test('btun client enforces max stream slots', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'btun_stream_slots_test_',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final clientKeys = await BtunCrypto.generateKeyPair();
+    final relayKeys = await BtunCrypto.generateKeyPair();
+    final config = BtunConfig.defaults(profileDir: temp.path).copyWith(
+      sessionId: 'testsession',
+      localPublicKey: clientKeys.publicKey,
+      localPrivateKey: clientKeys.privateKey,
+      peerPublicKey: relayKeys.publicKey,
+      maxStreams: 1,
+    );
+    final transport = _FakeTransport();
+    final chunkTransport = ChunkTransport(
+      transport: transport,
+      crypto: await BtunCrypto.fromConfig(
+        config,
+        send: Direction.c2r,
+        receive: Direction.r2c,
+      ),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      sessionId: config.sessionId,
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      chunkSize: config.chunkSize,
+      retryTimeout: config.retryTimeout,
+      maxInFlight: config.maxInFlight,
+      logger: const Logger(),
+      flushDelay: const Duration(minutes: 1),
+      ackDelay: const Duration(minutes: 1),
+    );
+    final client = BtunClient(config: config, chunkTransport: chunkTransport);
+
+    final first = await client.open('example.com', 443);
+    await expectLater(
+      client.open(
+        'example.org',
+        443,
+        slotTimeout: const Duration(milliseconds: 30),
+      ),
+      throwsA(isA<TimeoutException>()),
+    );
+
+    await first.close();
+    final second = await client.open(
+      'example.org',
+      443,
+      slotTimeout: const Duration(milliseconds: 100),
+    );
+
+    await second.close();
+    await client.close();
+    await chunkTransport.close();
+  });
+
   test('config fills missing transport settings with stable defaults', () {
     final config = BtunConfig.fromJson({
       'role': 'client',
@@ -992,12 +1049,12 @@ void main() {
     expect(config.transportPreset, BtunTransportPreset.stable);
     expect(config.chunkSize, 256 * 1024);
     expect(config.maxInFlight, 2);
-    expect(config.pollInterval, const Duration(milliseconds: 3000));
+    expect(config.pollInterval, const Duration(milliseconds: 2500));
     expect(config.uploadMinInterval, Duration.zero);
-    expect(config.uploadRateLimitPerMinute, 45);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 1000));
-    expect(config.flushDelay, const Duration(milliseconds: 100));
-    expect(config.bulkFlushDelay, const Duration(milliseconds: 250));
+    expect(config.uploadRateLimitPerMinute, 50);
+    expect(config.ackFlushInterval, const Duration(milliseconds: 750));
+    expect(config.flushDelay, const Duration(milliseconds: 75));
+    expect(config.bulkFlushDelay, const Duration(milliseconds: 200));
     expect(config.bulkChunkSize, 512 * 1024);
     expect(config.maxRetryChunks, 64);
     expect(config.maxRetryBytes, 64 * 1024 * 1024);
@@ -1014,7 +1071,7 @@ void main() {
       'upload_rate_limit_per_minute': 40,
     });
 
-    expect(config.uploadRateLimitPerMinute, 45);
+    expect(config.uploadRateLimitPerMinute, 50);
   });
 
   test('config defaults use responsive stable uploads', () {
@@ -1023,12 +1080,12 @@ void main() {
     expect(config.transportPreset, BtunTransportPreset.stable);
     expect(config.chunkSize, 256 * 1024);
     expect(config.maxInFlight, 2);
-    expect(config.pollInterval, const Duration(milliseconds: 3000));
+    expect(config.pollInterval, const Duration(milliseconds: 2500));
     expect(config.uploadMinInterval, Duration.zero);
-    expect(config.uploadRateLimitPerMinute, 45);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 1000));
-    expect(config.flushDelay, const Duration(milliseconds: 100));
-    expect(config.bulkFlushDelay, const Duration(milliseconds: 250));
+    expect(config.uploadRateLimitPerMinute, 50);
+    expect(config.ackFlushInterval, const Duration(milliseconds: 750));
+    expect(config.flushDelay, const Duration(milliseconds: 75));
+    expect(config.bulkFlushDelay, const Duration(milliseconds: 200));
     expect(config.bulkChunkSize, 512 * 1024);
     expect(config.maxRetryChunks, 64);
     expect(config.maxRetryBytes, 64 * 1024 * 1024);
@@ -1040,26 +1097,28 @@ void main() {
     final interactive = base.applyTransportPreset(
       BtunTransportPreset.interactive,
     );
-    expect(interactive.chunkSize, 256 * 1024);
-    expect(interactive.bulkChunkSize, 1024 * 1024);
-    expect(interactive.maxInFlight, 2);
-    expect(interactive.pollInterval, const Duration(milliseconds: 1500));
-    expect(interactive.uploadMinInterval, const Duration(milliseconds: 150));
-    expect(interactive.uploadRateLimitPerMinute, 35);
-    expect(interactive.ackFlushInterval, const Duration(milliseconds: 500));
-    expect(interactive.flushDelay, const Duration(milliseconds: 50));
-    expect(interactive.bulkFlushDelay, const Duration(milliseconds: 150));
+    expect(interactive.chunkSize, 64 * 1024);
+    expect(interactive.bulkChunkSize, 512 * 1024);
+    expect(interactive.maxInFlight, 4);
+    expect(interactive.pollInterval, const Duration(milliseconds: 400));
+    expect(interactive.uploadMinInterval, Duration.zero);
+    expect(interactive.uploadRateLimitPerMinute, 55);
+    expect(interactive.ackFlushInterval, const Duration(milliseconds: 75));
+    expect(interactive.flushDelay, Duration.zero);
+    expect(interactive.bulkFlushDelay, const Duration(milliseconds: 40));
+    expect(interactive.maxStreams, 8);
 
     final stable = base.applyTransportPreset(BtunTransportPreset.stable);
     expect(stable.chunkSize, 256 * 1024);
     expect(stable.bulkChunkSize, 512 * 1024);
     expect(stable.maxInFlight, 2);
-    expect(stable.pollInterval, const Duration(milliseconds: 3000));
+    expect(stable.pollInterval, const Duration(milliseconds: 2500));
     expect(stable.uploadMinInterval, Duration.zero);
-    expect(stable.uploadRateLimitPerMinute, 45);
-    expect(stable.ackFlushInterval, const Duration(milliseconds: 1000));
-    expect(stable.flushDelay, const Duration(milliseconds: 100));
-    expect(stable.bulkFlushDelay, const Duration(milliseconds: 250));
+    expect(stable.uploadRateLimitPerMinute, 50);
+    expect(stable.ackFlushInterval, const Duration(milliseconds: 750));
+    expect(stable.flushDelay, const Duration(milliseconds: 75));
+    expect(stable.bulkFlushDelay, const Duration(milliseconds: 200));
+    expect(stable.maxStreams, 5);
 
     final resilient = base.applyTransportPreset(BtunTransportPreset.resilient);
     expect(resilient.chunkSize, 256 * 1024);
@@ -1071,6 +1130,7 @@ void main() {
     expect(resilient.ackFlushInterval, const Duration(milliseconds: 500));
     expect(resilient.flushDelay, const Duration(milliseconds: 100));
     expect(resilient.bulkFlushDelay, const Duration(milliseconds: 300));
+    expect(resilient.maxStreams, 2);
   });
 }
 
