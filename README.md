@@ -20,88 +20,11 @@ client -> Bale -> relay -> Internet
 - Encrypted chunk transport over Bale Saved Messages.
 - Local SOCKS5 endpoint, defaulting to `127.0.0.1:1080`.
 
-## Requirements
-
-- Flutter/Dart compatible with SDK `^3.11.0`.
-- A Bale account usable on both machines.
-- Network access to Bale from both machines.
-- Two profiles: one `client`, one `relay`.
-- Public keys exchanged between the two profiles.
-
-For Linux desktop builds, install the usual Flutter Linux build dependencies:
-`clang`, `cmake`, `ninja-build`, `pkg-config`, `libgtk-3-dev`, and `liblzma-dev`.
-
-## Installation
-
-For a Linux x64 relay host, use the installer:
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
-```
-
-The installer downloads the latest Linux CLI release, runs relay setup for
-`~/.btun-relay`, and creates a user systemd service when available.
-
-<details>
-<summary>Advanced setup</summary>
-
-Build from source:
-
-```bash
-git clone https://github.com/evokelektrique/BaleChatTunnel.git
-cd BaleChatTunnel
-flutter pub get
-make build-cli-linux-x64
-```
-
-Installer overrides:
-
-```bash
-BTUN_VERSION=v0.2.1 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
-BTUN_INSTALL_DIR=/usr/local/bin BTUN_PROFILE=/etc/btun/relay bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
-BTUN_RUN_SETUP=0 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
-BTUN_INSTALL_SERVICE=0 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
-```
-
-Service commands:
-
-```bash
-systemctl --user status btun-relay
-systemctl --user restart btun-relay
-journalctl --user -u btun-relay -f
-```
-
-Set `BTUN_ENABLE_SERVICE=0` to install the service without starting it, or
-`BTUN_SERVICE_NAME=NAME` to use a different service name.
-
-Uninstall relay service, binary, and default relay profile:
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/uninstall-relay.sh)
-```
-
-Set `BTUN_REMOVE_PROFILE=0` to keep `~/.btun-relay`.
-
-Manual CLI setup:
-
-```bash
-./bale-chat-tunnel-cli-linux-x64 login --profile .btun-relay
-./bale-chat-tunnel-cli-linux-x64 init --profile .btun-relay
-./bale-chat-tunnel-cli-linux-x64 status --profile .btun-relay
-./bale-chat-tunnel-cli-linux-x64 login --profile .btun-client
-./bale-chat-tunnel-cli-linux-x64 init --profile .btun-client --relay-public-key RELAY_PUBLIC_KEY
-./bale-chat-tunnel-cli-linux-x64 client --profile .btun-client --socks-port 1080
-./bale-chat-tunnel-cli-linux-x64 init --profile .btun-relay --client-public-key CLIENT_PUBLIC_KEY
-./bale-chat-tunnel-cli-linux-x64 relay --profile .btun-relay
-```
-
-</details>
-
 ## Quick Start
 
 Use one Bale account on the client and one on the relay.
 
-1. Install and set up the relay:
+1. Install and set up the relay on a Linux x64 host:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
@@ -126,6 +49,12 @@ bale-chat-tunnel-cli-linux-x64 init --profile ~/.btun-relay --client-public-key 
 systemctl --user restart btun-relay
 ```
 
+4. Configure your browser, OS, or app:
+
+```text
+SOCKS5 127.0.0.1:1080
+```
+
 Useful relay commands:
 
 ```bash
@@ -134,11 +63,26 @@ bale-chat-tunnel-cli-linux-x64 account add --profile ~/.btun-relay
 journalctl --user -u btun-relay -f
 ```
 
-4. Configure your browser, OS, or app:
+<details>
+<summary>Advanced installer options</summary>
 
-```text
-SOCKS5 127.0.0.1:1080
+```bash
+BTUN_VERSION=v0.2.5 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
+BTUN_INSTALL_DIR=/usr/local/bin BTUN_PROFILE=/etc/btun/relay bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
+BTUN_RUN_SETUP=0 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
+BTUN_INSTALL_SERVICE=0 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
+BTUN_ENABLE_SERVICE=0 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
 ```
+
+Uninstall relay service, binary, and default relay profile:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/uninstall-relay.sh)
+```
+
+Set `BTUN_REMOVE_PROFILE=0` to keep `~/.btun-relay`.
+
+</details>
 
 ## Usage
 
@@ -171,10 +115,19 @@ other side's public key.
 
 ## Development
 
-Install dependencies:
+Requirements:
+
+- Flutter/Dart compatible with SDK `^3.11.0`.
+- For Linux desktop builds: `clang`, `cmake`, `ninja-build`, `pkg-config`,
+  `libgtk-3-dev`, and `liblzma-dev`.
+
+Build from source:
 
 ```bash
+git clone https://github.com/evokelektrique/BaleChatTunnel.git
+cd BaleChatTunnel
 make pub-get
+make build-cli-linux-x64
 ```
 
 Run the Flutter app:
