@@ -76,6 +76,8 @@ class ChunkTransport {
   final _pendingAcks = <int>{};
   var _nextSequence = DateTime.now().millisecondsSinceEpoch;
   var _closed = false;
+  var _retryInProgress = false;
+  DateTime? _retryNotBefore;
 
   Stream<TunnelFrame> get frames => _frames.stream;
 
@@ -250,7 +252,20 @@ class ChunkTransport {
   }
 
   Future<void> _retryDue() async {
-    if (_closed || transport.isBackingOff) return;
+    if (_closed || _retryInProgress || transport.isBackingOff) return;
+    final retryNotBefore = _retryNotBefore;
+    if (retryNotBefore != null && DateTime.now().isBefore(retryNotBefore)) {
+      return;
+    }
+    _retryInProgress = true;
+    try {
+      await _retryDueNow();
+    } finally {
+      _retryInProgress = false;
+    }
+  }
+
+  Future<void> _retryDueNow() async {
     final cutoff =
         DateTime.now().millisecondsSinceEpoch - retryTimeout.inMilliseconds;
     final retryable =
@@ -273,6 +288,16 @@ class ChunkTransport {
           ),
         );
         record.markSent();
+      } on BtunAccountTemporarilyUnavailable catch (error) {
+        final retryAfter = error.retryAfter;
+        if (retryAfter != null) {
+          final current = _retryNotBefore;
+          if (current == null || retryAfter.isAfter(current)) {
+            _retryNotBefore = retryAfter;
+          }
+        }
+        logger.warn('retry paused for chunk ${record.sequenceNumber}: $error');
+        break;
       } on Object catch (error) {
         logger.warn('retry failed for chunk ${record.sequenceNumber}: $error');
       }

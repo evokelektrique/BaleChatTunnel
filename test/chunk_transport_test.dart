@@ -626,6 +626,63 @@ void main() {
     await chunkTransport.close();
   });
 
+  test('chunk transport pauses retries during account cooldown', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'btun_retry_cooldown_test_',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final clientKeys = await BtunCrypto.generateKeyPair();
+    final relayKeys = await BtunCrypto.generateKeyPair();
+    final config = BtunConfig.defaults(profileDir: temp.path).copyWith(
+      sessionId: 'testsession',
+      localPublicKey: clientKeys.publicKey,
+      localPrivateKey: clientKeys.privateKey,
+      peerPublicKey: relayKeys.publicKey,
+      chunkSize: 1024 * 1024,
+    );
+    final transport = _FakeTransport();
+    final chunkTransport = ChunkTransport(
+      transport: transport,
+      crypto: await BtunCrypto.fromConfig(
+        config,
+        send: Direction.c2r,
+        receive: Direction.r2c,
+      ),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      sessionId: config.sessionId,
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      chunkSize: config.chunkSize,
+      retryTimeout: Duration.zero,
+      maxInFlight: 1,
+      logger: const Logger(),
+      flushDelay: const Duration(minutes: 1),
+      retryTick: const Duration(milliseconds: 20),
+    );
+    await chunkTransport.start();
+
+    await chunkTransport.sendFrame(
+      TunnelFrame.data(
+        sessionId: config.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 1,
+        payload: [1, 2, 3],
+      ),
+    );
+    await chunkTransport.flush();
+    transport.temporaryFailure = BtunAccountTemporarilyUnavailable(
+      operation: 'send btun_testsession_c2r_1.btun',
+      reason: 'all accounts are cooling down',
+      retryAfter: DateTime.now().add(const Duration(seconds: 2)),
+    );
+
+    await Future<void>.delayed(const Duration(milliseconds: 90));
+
+    expect(transport.sent, hasLength(2));
+    await chunkTransport.close();
+  });
+
   test('chunk transport removes memory retry records after ack', () async {
     final temp = await Directory.systemTemp.createTemp('btun_ack_retry_test_');
     addTearDown(() => temp.delete(recursive: true));
@@ -1041,6 +1098,42 @@ void main() {
     await transport.close();
   });
 
+  test('saved messages upload stable pacing uses configured ceiling', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'btun_upload_warm_start_test_',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final client = _FakeBaleClient();
+    final transport = BaleSavedMessagesTransport(
+      client: client,
+      sessionId: 'testsession',
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      pollInterval: const Duration(days: 1),
+      maxPollInterval: const Duration(days: 2),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      uploadMinInterval: Duration.zero,
+      uploadRateLimitPerMinute: 50,
+      logger: const Logger(),
+      maxConcurrentUploads: 50,
+    );
+
+    await Future.wait([
+      for (var i = 1; i <= 50; i += 1)
+        transport.sendFile(
+          OutgoingTunnelFile(
+            fileName: 'btun_testsession_c2r_$i.btun',
+            bytes: [i],
+            sequenceNumber: i,
+            direction: Direction.c2r,
+          ),
+        ),
+    ]);
+
+    expect(client.sentAt, hasLength(50));
+    await transport.close();
+  });
+
   test('saved messages transport does not poll immediately on start', () async {
     final temp = await Directory.systemTemp.createTemp('btun_idle_poll_test_');
     addTearDown(() => temp.delete(recursive: true));
@@ -1094,7 +1187,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 80));
 
     expect(client.loadHistoryCalls, 1);
-    expect(transport.pollInterval, const Duration(milliseconds: 20));
+    expect(transport.pollInterval, const Duration(milliseconds: 10));
     await transport.close();
   });
 
@@ -1166,18 +1259,54 @@ void main() {
     });
 
     expect(config.adaptive, BtunAdaptiveConfig.defaults);
-    expect(config.chunkSize, 64 * 1024);
+    expect(config.chunkSize, 1024 * 1024);
     expect(config.maxInFlight, 1);
-    expect(config.pollInterval, const Duration(milliseconds: 15000));
-    expect(config.maxPollInterval, const Duration(milliseconds: 120000));
+    expect(config.pollInterval, const Duration(milliseconds: 4000));
+    expect(config.maxPollInterval, const Duration(milliseconds: 4000));
     expect(config.uploadMinInterval, Duration.zero);
     expect(config.uploadRateLimitPerMinute, 50);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 200));
-    expect(config.flushDelay, const Duration(milliseconds: 50));
-    expect(config.bulkFlushDelay, const Duration(milliseconds: 250));
-    expect(config.bulkChunkSize, 1024 * 1024);
+    expect(config.ackFlushInterval, const Duration(milliseconds: 2000));
+    expect(config.flushDelay, const Duration(milliseconds: 800));
+    expect(config.bulkFlushDelay, const Duration(milliseconds: 1000));
+    expect(config.bulkChunkSize, 2 * 1024 * 1024);
     expect(config.maxRetryChunks, 64);
     expect(config.maxRetryBytes, 64 * 1024 * 1024);
+  });
+
+  test('config clamps unsafe adaptive values to stable bounds', () {
+    final config = BtunConfig.fromJson({
+      'role': 'client',
+      'session_file': 'session.json',
+      'database': 'state.json',
+      'session_id': 'testsession',
+      'local_public_key': '',
+      'local_private_key': '',
+      'adaptive': {
+        'min_poll_interval_ms': 300,
+        'max_poll_interval_ms': 300,
+        'min_ack_flush_interval_ms': 100,
+        'max_ack_flush_interval_ms': 100,
+        'min_flush_delay_ms': 50,
+        'max_flush_delay_ms': 250,
+        'min_upload_rate_per_minute': 10,
+        'max_upload_rate_per_minute': 25,
+        'min_chunk_size': 64 * 1024,
+        'max_chunk_size': 1024 * 1024,
+        'max_in_flight': 1,
+        'max_streams': 4,
+      },
+    });
+
+    expect(config.chunkSize, 1024 * 1024);
+    expect(config.bulkChunkSize, 2 * 1024 * 1024);
+    expect(config.pollInterval, const Duration(milliseconds: 4000));
+    expect(config.maxPollInterval, const Duration(milliseconds: 4000));
+    expect(config.adaptive.minUploadRatePerMinute, 40);
+    expect(config.uploadRateLimitPerMinute, 50);
+    expect(config.ackFlushInterval, const Duration(milliseconds: 2000));
+    expect(config.maxAckFlushInterval, const Duration(milliseconds: 3000));
+    expect(config.flushDelay, const Duration(milliseconds: 800));
+    expect(config.bulkFlushDelay, const Duration(milliseconds: 1000));
   });
 
   test('config ignores old fixed upload rate fields', () {
@@ -1194,20 +1323,20 @@ void main() {
     expect(config.uploadRateLimitPerMinute, 50);
   });
 
-  test('config defaults use adaptive fast bounds', () {
+  test('config defaults use stable chat bounds', () {
     final config = BtunConfig.defaults(profileDir: '.btun-test');
 
     expect(config.adaptive, BtunAdaptiveConfig.defaults);
-    expect(config.chunkSize, 64 * 1024);
+    expect(config.chunkSize, 1024 * 1024);
     expect(config.maxInFlight, 1);
-    expect(config.pollInterval, const Duration(milliseconds: 15000));
-    expect(config.maxPollInterval, const Duration(milliseconds: 120000));
+    expect(config.pollInterval, const Duration(milliseconds: 4000));
+    expect(config.maxPollInterval, const Duration(milliseconds: 4000));
     expect(config.uploadMinInterval, Duration.zero);
     expect(config.uploadRateLimitPerMinute, 50);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 200));
-    expect(config.flushDelay, const Duration(milliseconds: 50));
-    expect(config.bulkFlushDelay, const Duration(milliseconds: 250));
-    expect(config.bulkChunkSize, 1024 * 1024);
+    expect(config.ackFlushInterval, const Duration(milliseconds: 2000));
+    expect(config.flushDelay, const Duration(milliseconds: 800));
+    expect(config.bulkFlushDelay, const Duration(milliseconds: 1000));
+    expect(config.bulkChunkSize, 2 * 1024 * 1024);
     expect(config.maxRetryChunks, 64);
     expect(config.maxRetryBytes, 64 * 1024 * 1024);
   });
@@ -1265,6 +1394,7 @@ class _FakeBaleClient extends BaleClient {
 class _FakeTransport implements TunnelTransport {
   final sent = <OutgoingTunnelFile>[];
   final _incoming = StreamController<IncomingTunnelFile>.broadcast();
+  Object? temporaryFailure;
 
   @override
   bool get isBackingOff => false;
@@ -1283,6 +1413,8 @@ class _FakeTransport implements TunnelTransport {
   @override
   Future<void> sendFile(OutgoingTunnelFile file) async {
     sent.add(file);
+    final failure = temporaryFailure;
+    if (failure != null) throw failure;
   }
 
   @override

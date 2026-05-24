@@ -34,36 +34,38 @@ class BtunAdaptiveConfig {
   final int maxStreams;
 
   static const defaults = BtunAdaptiveConfig(
-    minPollInterval: Duration(milliseconds: 15000),
-    maxPollInterval: Duration(milliseconds: 120000),
-    minAckFlushInterval: Duration(milliseconds: 200),
-    maxAckFlushInterval: Duration(milliseconds: 500),
-    minFlushDelay: Duration(milliseconds: 50),
-    maxFlushDelay: Duration(milliseconds: 250),
-    minUploadRatePerMinute: 10,
+    minPollInterval: Duration(milliseconds: 4000),
+    maxPollInterval: Duration(milliseconds: 4000),
+    minAckFlushInterval: Duration(milliseconds: 2000),
+    maxAckFlushInterval: Duration(milliseconds: 3000),
+    minFlushDelay: Duration(milliseconds: 800),
+    maxFlushDelay: Duration(milliseconds: 1000),
+    minUploadRatePerMinute: 40,
     maxUploadRatePerMinute: 50,
-    minChunkSize: 64 * 1024,
-    maxChunkSize: 1024 * 1024,
+    minChunkSize: 1024 * 1024,
+    maxChunkSize: 2 * 1024 * 1024,
     maxInFlight: 1,
-    maxStreams: 8,
+    maxStreams: 4,
   );
 
   static BtunAdaptiveConfig fromJson(Map<String, Object?>? json) {
     if (json == null) return defaults;
-    return defaults.copyWith(
-      minPollInterval: _duration(json['min_poll_interval_ms']),
-      maxPollInterval: _duration(json['max_poll_interval_ms']),
-      minAckFlushInterval: _duration(json['min_ack_flush_interval_ms']),
-      maxAckFlushInterval: _duration(json['max_ack_flush_interval_ms']),
-      minFlushDelay: _duration(json['min_flush_delay_ms']),
-      maxFlushDelay: _duration(json['max_flush_delay_ms']),
-      minUploadRatePerMinute: json['min_upload_rate_per_minute'] as int?,
-      maxUploadRatePerMinute: json['max_upload_rate_per_minute'] as int?,
-      minChunkSize: json['min_chunk_size'] as int?,
-      maxChunkSize: json['max_chunk_size'] as int?,
-      maxInFlight: json['max_in_flight'] as int?,
-      maxStreams: json['max_streams'] as int?,
-    );
+    return defaults
+        .copyWith(
+          minPollInterval: _duration(json['min_poll_interval_ms']),
+          maxPollInterval: _duration(json['max_poll_interval_ms']),
+          minAckFlushInterval: _duration(json['min_ack_flush_interval_ms']),
+          maxAckFlushInterval: _duration(json['max_ack_flush_interval_ms']),
+          minFlushDelay: _duration(json['min_flush_delay_ms']),
+          maxFlushDelay: _duration(json['max_flush_delay_ms']),
+          minUploadRatePerMinute: json['min_upload_rate_per_minute'] as int?,
+          maxUploadRatePerMinute: json['max_upload_rate_per_minute'] as int?,
+          minChunkSize: json['min_chunk_size'] as int?,
+          maxChunkSize: json['max_chunk_size'] as int?,
+          maxInFlight: json['max_in_flight'] as int?,
+          maxStreams: json['max_streams'] as int?,
+        )
+        ._stable();
   }
 
   Map<String, Object?> toJson() => {
@@ -113,6 +115,56 @@ class BtunAdaptiveConfig {
 
   static Duration? _duration(Object? value) =>
       value is int ? Duration(milliseconds: value) : null;
+
+  BtunAdaptiveConfig _stable() {
+    final minPoll = _atLeast(minPollInterval, defaults.minPollInterval);
+    final maxPoll = _atLeast(
+      _atLeast(maxPollInterval, defaults.maxPollInterval),
+      minPoll,
+    );
+    final minAck = _atLeast(minAckFlushInterval, defaults.minAckFlushInterval);
+    final maxAck = _atLeast(
+      _atLeast(maxAckFlushInterval, defaults.maxAckFlushInterval),
+      minAck,
+    );
+    final minFlush = _atLeast(minFlushDelay, defaults.minFlushDelay);
+    final maxFlush = _atLeast(
+      _atLeast(maxFlushDelay, defaults.maxFlushDelay),
+      minFlush,
+    );
+    final minUpload = minUploadRatePerMinute < defaults.minUploadRatePerMinute
+        ? defaults.minUploadRatePerMinute
+        : minUploadRatePerMinute;
+    final maxUpload = maxUploadRatePerMinute < defaults.maxUploadRatePerMinute
+        ? defaults.maxUploadRatePerMinute
+        : maxUploadRatePerMinute;
+    final minChunk = minChunkSize < defaults.minChunkSize
+        ? defaults.minChunkSize
+        : minChunkSize;
+    final maxChunkFloor = defaults.maxChunkSize < minChunk
+        ? minChunk
+        : defaults.maxChunkSize;
+    final maxChunk = maxChunkSize < maxChunkFloor
+        ? maxChunkFloor
+        : maxChunkSize;
+    return copyWith(
+      minPollInterval: minPoll,
+      maxPollInterval: maxPoll,
+      minAckFlushInterval: minAck,
+      maxAckFlushInterval: maxAck,
+      minFlushDelay: minFlush,
+      maxFlushDelay: maxFlush,
+      minUploadRatePerMinute: minUpload,
+      maxUploadRatePerMinute: maxUpload,
+      minChunkSize: minChunk,
+      maxChunkSize: maxChunk,
+      maxInFlight: maxInFlight <= 0 ? defaults.maxInFlight : maxInFlight,
+      maxStreams: maxStreams <= 0 ? defaults.maxStreams : maxStreams,
+    );
+  }
+
+  static Duration _atLeast(Duration value, Duration minimum) =>
+      value < minimum ? minimum : value;
 
   @override
   bool operator ==(Object other) =>

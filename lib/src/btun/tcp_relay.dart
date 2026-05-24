@@ -92,14 +92,14 @@ class TcpRelay {
 
   void _data(int streamId, List<int> data) {
     if (_closedStreams.contains(streamId)) {
-      logger.warn('relay ignored DATA for closed stream=$streamId');
+      logger.info('relay ignored DATA for closed stream=$streamId');
       return;
     }
     final stream = _streams.putIfAbsent(streamId, _RelayStream.new);
     if (stream.state == _RelayStreamState.closing ||
         stream.state == _RelayStreamState.closed ||
         stream.reset) {
-      logger.warn('relay ignored DATA for closed stream=$streamId');
+      logger.info('relay ignored DATA for closed stream=$streamId');
       return;
     }
     final socket = stream.socket;
@@ -137,7 +137,7 @@ class TcpRelay {
     try {
       socket.add(data);
     } on Object catch (error) {
-      logger.warn('relay ignored DATA for closed stream=$streamId: $error');
+      logger.info('relay ignored DATA for closed stream=$streamId: $error');
       _closedStreams.add(streamId);
       _streams.remove(streamId)?.destroy();
     }

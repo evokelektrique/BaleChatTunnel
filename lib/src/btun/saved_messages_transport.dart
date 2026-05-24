@@ -34,8 +34,6 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   final Logger logger;
   int maxConcurrentUploads;
   final int? accountUserId;
-  late Duration _fastPollInterval = pollInterval;
-  var _successfulPollStreak = 0;
 
   final StreamController<IncomingTunnelFile> _incoming =
       StreamController<IncomingTunnelFile>.broadcast();
@@ -43,10 +41,13 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   Timer? _pollTimer;
   bool _polling = false;
   var _closing = false;
-  DateTime? _backoffUntil;
+  DateTime? _uploadBackoffUntil;
+  DateTime? _receiveBackoffUntil;
   var _rateLimitFailures = 0;
-  Completer<void>? _backoffCompleter;
-  Object? _backoffToken;
+  Completer<void>? _uploadBackoffCompleter;
+  Completer<void>? _receiveBackoffCompleter;
+  Object? _uploadBackoffToken;
+  Object? _receiveBackoffToken;
   final _pendingUploads = <_QueuedUpload>[];
   var _activeUploads = 0;
   DateTime? _lastUploadAt;
@@ -56,20 +57,18 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   Future<void> _downloadTail = Future.value();
   final _uploadWindow = <DateTime>[];
   Future<void> _uploadSlotTail = Future.value();
-  var _adaptiveUploadRateLimit = 0;
   var _rateLimitEvents = 0;
   var _transientHttpEvents = 0;
   var _adaptiveConcurrentUploads = 1;
-  var _successfulUploadStreak = 0;
 
   @override
   bool get isBackingOff {
-    final until = _backoffUntil;
+    final until = _uploadBackoffUntil;
     return until != null && DateTime.now().isBefore(until);
   }
 
   @override
-  DateTime? get backoffUntil => isBackingOff ? _backoffUntil : null;
+  DateTime? get backoffUntil => isBackingOff ? _uploadBackoffUntil : null;
 
   BalePeer get _savedMessagesPeer {
     final userId = client.session?.userId;
@@ -100,14 +99,10 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         this.maxPollInterval != maxPollInterval;
     this.pollInterval = pollInterval;
     this.maxPollInterval = maxPollInterval;
-    _fastPollInterval = pollInterval;
-    _successfulPollStreak = 0;
     this.uploadMinInterval = uploadMinInterval;
     this.uploadRateLimitPerMinute = uploadRateLimitPerMinute;
     this.maxConcurrentUploads = maxConcurrentUploads;
-    _adaptiveUploadRateLimit = _initialAdaptiveUploadRateLimit;
     _adaptiveConcurrentUploads = 1;
-    _successfulUploadStreak = 0;
     if (pollChanged && _updates != null) {
       _pollTimer?.cancel();
       _scheduleNextPoll();
@@ -331,14 +326,10 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     Future<T> Function() action,
   ) async {
     while (true) {
-      await _waitForBackoff();
+      await _waitForReceiveBackoff();
       try {
         final result = await action();
         _rateLimitFailures = 0;
-        if (operation.startsWith('poll ') ||
-            operation.startsWith('download ')) {
-          _recordPollSuccess();
-        }
         return result;
       } on Object catch (error) {
         if (isBaleRateLimit(error)) {
@@ -356,11 +347,16 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     }
   }
 
-  Future<void> _waitForBackoff() async {
-    while (isBackingOff) {
-      final completer = _backoffCompleter;
+  Future<void> _waitForReceiveBackoff() async {
+    while (_isReceiveBackingOff) {
+      final completer = _receiveBackoffCompleter;
       if (completer != null) await completer.future;
     }
+  }
+
+  bool get _isReceiveBackingOff {
+    final until = _receiveBackoffUntil;
+    return until != null && DateTime.now().isBefore(until);
   }
 
   Future<void> _waitForUploadPace() async {
@@ -408,49 +404,18 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   }
 
   int get _currentUploadRateLimit {
-    if (_adaptiveUploadRateLimit <= 0) {
-      _adaptiveUploadRateLimit = _initialAdaptiveUploadRateLimit;
-    }
-    return _adaptiveUploadRateLimit;
-  }
-
-  int get _initialAdaptiveUploadRateLimit {
-    final base = uploadRateLimitPerMinute <= 0 ? 1 : uploadRateLimitPerMinute;
-    return base < 30 ? base : 30;
+    return uploadRateLimitPerMinute <= 0 ? 1 : uploadRateLimitPerMinute;
   }
 
   void _lowerUploadRateLimit() {
-    final base = uploadRateLimitPerMinute <= 0 ? 1 : uploadRateLimitPerMinute;
-    final current = _currentUploadRateLimit <= 0
-        ? base
-        : _currentUploadRateLimit;
-    _adaptiveUploadRateLimit = (current / 2).floor().clamp(5, base).toInt();
     _adaptiveConcurrentUploads = 1;
-    _successfulUploadStreak = 0;
     logger.warn(
-      'adaptive upload pressure lowered to $_adaptiveUploadRateLimit/min '
+      'upload pressure held at $_currentUploadRateLimit/min '
       'concurrency=$_adaptiveConcurrentUploads',
     );
   }
 
-  void _recordUploadSuccess() {
-    final base = uploadRateLimitPerMinute <= 0 ? 1 : uploadRateLimitPerMinute;
-    _successfulUploadStreak += 1;
-    if (_successfulUploadStreak < 12) return;
-    _successfulUploadStreak = 0;
-    if (_adaptiveUploadRateLimit < base) {
-      _adaptiveUploadRateLimit = (_adaptiveUploadRateLimit + 5)
-          .clamp(1, base)
-          .toInt();
-    }
-    final configuredLimit = maxConcurrentUploads <= 0
-        ? 1
-        : maxConcurrentUploads;
-    if (_pendingUploads.isNotEmpty &&
-        _adaptiveConcurrentUploads < configuredLimit) {
-      _adaptiveConcurrentUploads += 1;
-    }
-  }
+  void _recordUploadSuccess() {}
 
   void _logUploadWindowStats() {
     final now = DateTime.now();
@@ -472,12 +437,8 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     } else {
       _transientHttpEvents += 1;
     }
-    if (operation.startsWith('send ')) {
-      _lowerUploadRateLimit();
-    }
-    if (operation.startsWith('poll ') || operation.startsWith('download ')) {
-      _slowPollInterval();
-    }
+    final uploadOperation = operation.startsWith('send ');
+    if (uploadOperation) _lowerUploadRateLimit();
     final fallback = rateLimit
         ? Duration(
             seconds: switch (_rateLimitFailures) {
@@ -490,24 +451,48 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         : const Duration(seconds: 60);
     final delay = fallback;
     final until = DateTime.now().add(delay);
-    final current = _backoffUntil;
+    final current = uploadOperation
+        ? _uploadBackoffUntil
+        : _receiveBackoffUntil;
     if (current == null || until.isAfter(current)) {
-      _backoffUntil = until;
+      if (uploadOperation) {
+        _uploadBackoffUntil = until;
+      } else {
+        _receiveBackoffUntil = until;
+      }
       final token = Object();
-      _backoffToken = token;
-      _backoffCompleter = Completer<void>();
+      final completer = Completer<void>();
+      if (uploadOperation) {
+        _uploadBackoffToken = token;
+        _uploadBackoffCompleter = completer;
+      } else {
+        _receiveBackoffToken = token;
+        _receiveBackoffCompleter = completer;
+      }
       Timer(delay, () {
-        if (_backoffToken != token) return;
-        final completer = _backoffCompleter;
-        if (completer != null && !completer.isCompleted) {
-          completer.complete();
+        if (uploadOperation) {
+          if (_uploadBackoffToken != token) return;
+          final completer = _uploadBackoffCompleter;
+          if (completer != null && !completer.isCompleted) {
+            completer.complete();
+          }
+          _uploadBackoffCompleter = null;
+          _uploadBackoffToken = null;
+        } else {
+          if (_receiveBackoffToken != token) return;
+          final completer = _receiveBackoffCompleter;
+          if (completer != null && !completer.isCompleted) {
+            completer.complete();
+          }
+          _receiveBackoffCompleter = null;
+          _receiveBackoffToken = null;
         }
-        _backoffCompleter = null;
-        _backoffToken = null;
       });
       final reason = rateLimit ? 'rate limited' : 'HTTP 500/transient error';
+      final scope = uploadOperation ? 'upload' : 'receive';
       logger.warn(
-        'Bale $reason during $operation; backing off ${delay.inSeconds}s '
+        'Bale $reason during $operation; backing off $scope '
+        '${delay.inSeconds}s '
         'account=${accountUserId ?? 'unknown'} '
         '(rate_limits=$_rateLimitEvents transient_http=$_transientHttpEvents)',
       );
@@ -516,39 +501,6 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         'Bale operation failed during $operation; already backing off',
       );
     }
-  }
-
-  void _slowPollInterval() {
-    _successfulPollStreak = 0;
-    final nextMs = (pollInterval.inMilliseconds * 2).clamp(
-      _fastPollInterval.inMilliseconds,
-      _maxPollInterval.inMilliseconds,
-    );
-    _setPollInterval(Duration(milliseconds: nextMs));
-  }
-
-  void _recordPollSuccess() {
-    _successfulPollStreak += 1;
-    if (_successfulPollStreak < 20) return;
-    _successfulPollStreak = 0;
-    if (pollInterval <= _fastPollInterval) return;
-    final nextMs = (pollInterval.inMilliseconds * 0.9).round().clamp(
-      _fastPollInterval.inMilliseconds,
-      pollInterval.inMilliseconds,
-    );
-    _setPollInterval(Duration(milliseconds: nextMs));
-  }
-
-  void _setPollInterval(Duration next) {
-    if (next == pollInterval) return;
-    pollInterval = next;
-    if (_updates == null) return;
-    _pollTimer?.cancel();
-    _scheduleNextPoll();
-    logger.info(
-      'adaptive poll interval ${pollInterval.inMilliseconds}ms '
-      'account=${accountUserId ?? 'unknown'}',
-    );
   }
 
   void _scheduleNextPoll([Duration? delay]) {
@@ -568,11 +520,6 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         accountUserId ?? client.session?.userId ?? sessionId.hashCode;
     final maxJitterMs = (baseMs ~/ 5).clamp(1, 250);
     return Duration(milliseconds: account.abs() % (maxJitterMs + 1));
-  }
-
-  Duration get _maxPollInterval {
-    if (maxPollInterval < _fastPollInterval) return _fastPollInterval;
-    return maxPollInterval;
   }
 
   @override
