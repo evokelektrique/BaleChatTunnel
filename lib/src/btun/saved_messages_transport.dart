@@ -13,6 +13,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     required this.sendDirection,
     required this.receiveDirection,
     required this.pollInterval,
+    required this.maxPollInterval,
     required this.stateDb,
     required this.uploadMinInterval,
     required this.uploadRateLimitPerMinute,
@@ -26,6 +27,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   final Direction sendDirection;
   final Direction receiveDirection;
   Duration pollInterval;
+  Duration maxPollInterval;
   final StateDb stateDb;
   Duration uploadMinInterval;
   int uploadRateLimitPerMinute;
@@ -33,6 +35,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   int maxConcurrentUploads;
   final int? accountUserId;
   late Duration _fastPollInterval = pollInterval;
+  var _successfulPollStreak = 0;
 
   final StreamController<IncomingTunnelFile> _incoming =
       StreamController<IncomingTunnelFile>.broadcast();
@@ -82,18 +85,23 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         unawaited(_maybeDownload(message));
       }
     });
-    _scheduleNextPoll(Duration.zero);
+    _scheduleNextPoll();
   }
 
   void updateSettings({
     required Duration pollInterval,
+    required Duration maxPollInterval,
     required Duration uploadMinInterval,
     required int uploadRateLimitPerMinute,
     required int maxConcurrentUploads,
   }) {
-    final pollChanged = this.pollInterval != pollInterval;
+    final pollChanged =
+        this.pollInterval != pollInterval ||
+        this.maxPollInterval != maxPollInterval;
     this.pollInterval = pollInterval;
+    this.maxPollInterval = maxPollInterval;
     _fastPollInterval = pollInterval;
+    _successfulPollStreak = 0;
     this.uploadMinInterval = uploadMinInterval;
     this.uploadRateLimitPerMinute = uploadRateLimitPerMinute;
     this.maxConcurrentUploads = maxConcurrentUploads;
@@ -314,6 +322,10 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     return name.startsWith(prefix);
   }
 
+  bool _isReceiveOperation(String operation) {
+    return operation.startsWith('poll ') || operation.startsWith('download ');
+  }
+
   Future<T> _withRateLimitBackoff<T>(
     String operation,
     Future<T> Function() action,
@@ -325,16 +337,18 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         _rateLimitFailures = 0;
         if (operation.startsWith('poll ') ||
             operation.startsWith('download ')) {
-          _recoverPollInterval();
+          _recordPollSuccess();
         }
         return result;
       } on Object catch (error) {
         if (isBaleRateLimit(error)) {
           _startBackoff(operation, error, rateLimit: true);
+          if (_isReceiveOperation(operation)) rethrow;
           continue;
         }
         if (isBaleTransientHttpError(error)) {
           _startBackoff(operation, error, rateLimit: false);
+          if (_isReceiveOperation(operation)) rethrow;
           continue;
         }
         rethrow;
@@ -505,17 +519,20 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   }
 
   void _slowPollInterval() {
-    const maxPoll = Duration(seconds: 4);
+    _successfulPollStreak = 0;
     final nextMs = (pollInterval.inMilliseconds * 2).clamp(
       _fastPollInterval.inMilliseconds,
-      maxPoll.inMilliseconds,
+      _maxPollInterval.inMilliseconds,
     );
     _setPollInterval(Duration(milliseconds: nextMs));
   }
 
-  void _recoverPollInterval() {
+  void _recordPollSuccess() {
+    _successfulPollStreak += 1;
+    if (_successfulPollStreak < 20) return;
+    _successfulPollStreak = 0;
     if (pollInterval <= _fastPollInterval) return;
-    final nextMs = (pollInterval.inMilliseconds * 0.75).round().clamp(
+    final nextMs = (pollInterval.inMilliseconds * 0.9).round().clamp(
       _fastPollInterval.inMilliseconds,
       pollInterval.inMilliseconds,
     );
@@ -551,6 +568,11 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         accountUserId ?? client.session?.userId ?? sessionId.hashCode;
     final maxJitterMs = (baseMs ~/ 5).clamp(1, 250);
     return Duration(milliseconds: account.abs() % (maxJitterMs + 1));
+  }
+
+  Duration get _maxPollInterval {
+    if (maxPollInterval < _fastPollInterval) return _fastPollInterval;
+    return maxPollInterval;
   }
 
   @override
@@ -630,6 +652,7 @@ class LoadBalancedSavedMessagesTransport implements TunnelTransport {
 
   void updateAccountSettings({
     required Duration pollInterval,
+    required Duration maxPollInterval,
     required Duration uploadMinInterval,
     required int uploadRateLimitPerMinute,
     required int maxConcurrentUploads,
@@ -638,6 +661,7 @@ class LoadBalancedSavedMessagesTransport implements TunnelTransport {
       if (transport is! BaleSavedMessagesTransport) continue;
       transport.updateSettings(
         pollInterval: pollInterval,
+        maxPollInterval: maxPollInterval,
         uploadMinInterval: uploadMinInterval,
         uploadRateLimitPerMinute: uploadRateLimitPerMinute,
         maxConcurrentUploads: maxConcurrentUploads,

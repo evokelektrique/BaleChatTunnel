@@ -534,6 +534,7 @@ class BtunCli {
             sendDirection: send,
             receiveDirection: receive,
             pollInterval: config.pollInterval,
+            maxPollInterval: config.maxPollInterval,
             stateDb: state,
             uploadMinInterval: config.uploadMinInterval,
             uploadRateLimitPerMinute: config.uploadRateLimitPerMinute,
@@ -759,6 +760,7 @@ class BtunRuntime {
     await _reloadAccounts(nextConfig);
     transport.updateAccountSettings(
       pollInterval: nextConfig.pollInterval,
+      maxPollInterval: nextConfig.maxPollInterval,
       uploadMinInterval: nextConfig.uploadMinInterval,
       uploadRateLimitPerMinute: nextConfig.uploadRateLimitPerMinute,
       maxConcurrentUploads: nextConfig.maxInFlight,
@@ -806,6 +808,7 @@ class BtunRuntime {
           sendDirection: sendDirection,
           receiveDirection: receiveDirection,
           pollInterval: nextConfig.pollInterval,
+          maxPollInterval: nextConfig.maxPollInterval,
           stateDb: stateDb,
           uploadMinInterval: nextConfig.uploadMinInterval,
           uploadRateLimitPerMinute: nextConfig.uploadRateLimitPerMinute,

@@ -80,6 +80,7 @@ class BtunClientRuntime {
     await _reloadAccounts(nextConfig);
     transport.updateAccountSettings(
       pollInterval: nextConfig.pollInterval,
+      maxPollInterval: nextConfig.maxPollInterval,
       uploadMinInterval: nextConfig.uploadMinInterval,
       uploadRateLimitPerMinute: nextConfig.uploadRateLimitPerMinute,
       maxConcurrentUploads: nextConfig.maxInFlight,
@@ -130,6 +131,7 @@ class BtunClientRuntime {
           sendDirection: Direction.c2r,
           receiveDirection: Direction.r2c,
           pollInterval: nextConfig.pollInterval,
+          maxPollInterval: nextConfig.maxPollInterval,
           stateDb: stateDb,
           uploadMinInterval: nextConfig.uploadMinInterval,
           uploadRateLimitPerMinute: nextConfig.uploadRateLimitPerMinute,
@@ -201,6 +203,7 @@ Future<BtunClientRuntime> createBtunClientRuntime({
           sendDirection: Direction.c2r,
           receiveDirection: Direction.r2c,
           pollInterval: config.pollInterval,
+          maxPollInterval: config.maxPollInterval,
           stateDb: state,
           uploadMinInterval: config.uploadMinInterval,
           uploadRateLimitPerMinute: config.uploadRateLimitPerMinute,

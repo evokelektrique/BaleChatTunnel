@@ -949,6 +949,7 @@ void main() {
         sendDirection: Direction.c2r,
         receiveDirection: Direction.r2c,
         pollInterval: const Duration(days: 1),
+        maxPollInterval: const Duration(days: 2),
         stateDb: StateDb.open('${temp.path}/state.json'),
         uploadMinInterval: const Duration(milliseconds: 30),
         uploadRateLimitPerMinute: 50,
@@ -1010,6 +1011,7 @@ void main() {
       sendDirection: Direction.c2r,
       receiveDirection: Direction.r2c,
       pollInterval: const Duration(days: 1),
+      maxPollInterval: const Duration(days: 2),
       stateDb: StateDb.open('${temp.path}/state.json'),
       uploadMinInterval: Duration.zero,
       uploadRateLimitPerMinute: 50,
@@ -1036,6 +1038,63 @@ void main() {
 
     expect(transport.isBackingOff, isTrue);
     expect(transport.backoffUntil, isNotNull);
+    await transport.close();
+  });
+
+  test('saved messages transport does not poll immediately on start', () async {
+    final temp = await Directory.systemTemp.createTemp('btun_idle_poll_test_');
+    addTearDown(() => temp.delete(recursive: true));
+    final client = _FakeBaleClient();
+    final transport = BaleSavedMessagesTransport(
+      client: client,
+      sessionId: 'testsession',
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      pollInterval: const Duration(milliseconds: 80),
+      maxPollInterval: const Duration(milliseconds: 400),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      uploadMinInterval: Duration.zero,
+      uploadRateLimitPerMinute: 50,
+      logger: const Logger(),
+      maxConcurrentUploads: 1,
+      accountUserId: 42,
+    );
+
+    await transport.start();
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    expect(client.loadHistoryCalls, isZero);
+    await transport.close();
+  });
+
+  test('saved messages poll backs off without rapid recovery', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'btun_poll_backoff_test_',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final client = _FakeBaleClient(
+      loadHistoryErrors: [const BaleException('user_rate_limited', code: 8)],
+    );
+    final transport = BaleSavedMessagesTransport(
+      client: client,
+      sessionId: 'testsession',
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      pollInterval: const Duration(milliseconds: 10),
+      maxPollInterval: const Duration(milliseconds: 40),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      uploadMinInterval: Duration.zero,
+      uploadRateLimitPerMinute: 50,
+      logger: const Logger(),
+      maxConcurrentUploads: 1,
+      accountUserId: 42,
+    );
+
+    await transport.start();
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+
+    expect(client.loadHistoryCalls, 1);
+    expect(transport.pollInterval, const Duration(milliseconds: 20));
     await transport.close();
   });
 
@@ -1109,7 +1168,8 @@ void main() {
     expect(config.adaptive, BtunAdaptiveConfig.defaults);
     expect(config.chunkSize, 64 * 1024);
     expect(config.maxInFlight, 1);
-    expect(config.pollInterval, const Duration(milliseconds: 1000));
+    expect(config.pollInterval, const Duration(milliseconds: 15000));
+    expect(config.maxPollInterval, const Duration(milliseconds: 120000));
     expect(config.uploadMinInterval, Duration.zero);
     expect(config.uploadRateLimitPerMinute, 50);
     expect(config.ackFlushInterval, const Duration(milliseconds: 200));
@@ -1140,7 +1200,8 @@ void main() {
     expect(config.adaptive, BtunAdaptiveConfig.defaults);
     expect(config.chunkSize, 64 * 1024);
     expect(config.maxInFlight, 1);
-    expect(config.pollInterval, const Duration(milliseconds: 1000));
+    expect(config.pollInterval, const Duration(milliseconds: 15000));
+    expect(config.maxPollInterval, const Duration(milliseconds: 120000));
     expect(config.uploadMinInterval, Duration.zero);
     expect(config.uploadRateLimitPerMinute, 50);
     expect(config.ackFlushInterval, const Duration(milliseconds: 200));
@@ -1153,11 +1214,14 @@ void main() {
 }
 
 class _FakeBaleClient extends BaleClient {
-  _FakeBaleClient({this.sendError});
+  _FakeBaleClient({this.sendError, List<Object> loadHistoryErrors = const []})
+    : _loadHistoryErrors = List<Object>.of(loadHistoryErrors);
 
   final sentAt = <DateTime>[];
   final _updates = StreamController<BaleUpdate>.broadcast();
   final Object? sendError;
+  final List<Object> _loadHistoryErrors;
+  var loadHistoryCalls = 0;
 
   @override
   BaleSession? get session =>
@@ -1165,6 +1229,18 @@ class _FakeBaleClient extends BaleClient {
 
   @override
   Stream<BaleUpdate> get updates => _updates.stream;
+
+  @override
+  Future<List<BaleMessage>> loadHistory({
+    required BalePeer peer,
+    int limit = 20,
+    int offsetDate = 9223372036854775807,
+    int loadMode = 2,
+  }) async {
+    loadHistoryCalls += 1;
+    if (_loadHistoryErrors.isNotEmpty) throw _loadHistoryErrors.removeAt(0);
+    return const [];
+  }
 
   @override
   Future<BaleMessage> sendDocument({

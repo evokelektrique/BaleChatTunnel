@@ -34,8 +34,8 @@ class BtunAdaptiveConfig {
   final int maxStreams;
 
   static const defaults = BtunAdaptiveConfig(
-    minPollInterval: Duration(milliseconds: 1000),
-    maxPollInterval: Duration(milliseconds: 4000),
+    minPollInterval: Duration(milliseconds: 15000),
+    maxPollInterval: Duration(milliseconds: 120000),
     minAckFlushInterval: Duration(milliseconds: 200),
     maxAckFlushInterval: Duration(milliseconds: 500),
     minFlushDelay: Duration(milliseconds: 50),
@@ -183,6 +183,7 @@ class BtunConfig {
   int get bulkChunkSize => adaptive.maxChunkSize;
   int get maxInFlight => adaptive.maxInFlight;
   Duration get pollInterval => adaptive.minPollInterval;
+  Duration get maxPollInterval => adaptive.maxPollInterval;
   Duration get uploadMinInterval => Duration.zero;
   int get uploadRateLimitPerMinute => adaptive.maxUploadRatePerMinute;
   Duration get ackFlushInterval => adaptive.minAckFlushInterval;
