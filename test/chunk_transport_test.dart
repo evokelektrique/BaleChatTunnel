@@ -1040,15 +1040,15 @@ void main() {
     final interactive = base.applyTransportPreset(
       BtunTransportPreset.interactive,
     );
-    expect(interactive.chunkSize, 64 * 1024);
-    expect(interactive.bulkChunkSize, 512 * 1024);
-    expect(interactive.maxInFlight, 4);
-    expect(interactive.pollInterval, const Duration(milliseconds: 500));
-    expect(interactive.uploadMinInterval, Duration.zero);
-    expect(interactive.uploadRateLimitPerMinute, 50);
-    expect(interactive.ackFlushInterval, const Duration(milliseconds: 100));
-    expect(interactive.flushDelay, Duration.zero);
-    expect(interactive.bulkFlushDelay, const Duration(milliseconds: 50));
+    expect(interactive.chunkSize, 256 * 1024);
+    expect(interactive.bulkChunkSize, 1024 * 1024);
+    expect(interactive.maxInFlight, 2);
+    expect(interactive.pollInterval, const Duration(milliseconds: 1500));
+    expect(interactive.uploadMinInterval, const Duration(milliseconds: 150));
+    expect(interactive.uploadRateLimitPerMinute, 35);
+    expect(interactive.ackFlushInterval, const Duration(milliseconds: 500));
+    expect(interactive.flushDelay, const Duration(milliseconds: 50));
+    expect(interactive.bulkFlushDelay, const Duration(milliseconds: 150));
 
     final stable = base.applyTransportPreset(BtunTransportPreset.stable);
     expect(stable.chunkSize, 256 * 1024);
