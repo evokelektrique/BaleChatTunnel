@@ -31,5 +31,32 @@ abstract interface class TunnelTransport {
   Stream<IncomingTunnelFile> incomingFiles();
   Future<void> sendFile(OutgoingTunnelFile file);
   bool get isBackingOff;
+  DateTime? get backoffUntil;
   Future<void> close();
+}
+
+class BtunAccountTemporarilyUnavailable implements Exception {
+  const BtunAccountTemporarilyUnavailable({
+    required this.operation,
+    required this.reason,
+    this.accountUserId,
+    this.retryAfter,
+    this.cause,
+  });
+
+  final String operation;
+  final String reason;
+  final int? accountUserId;
+  final DateTime? retryAfter;
+  final Object? cause;
+
+  @override
+  String toString() {
+    final account = accountUserId == null ? '' : ' account=$accountUserId';
+    final retry = retryAfter == null
+        ? ''
+        : ' retry_after=${retryAfter!.toIso8601String()}';
+    return 'temporary Bale account failure$account during $operation: '
+        '$reason$retry';
+  }
 }

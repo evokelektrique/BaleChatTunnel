@@ -52,6 +52,93 @@ void main() {
     await transport.close();
   });
 
+  test('load balanced transport skips accounts that are backing off', () async {
+    final first = _FakeTransport(
+      backoffUntil: DateTime.now().add(const Duration(minutes: 1)),
+    );
+    final second = _FakeTransport();
+    final transport = LoadBalancedSavedMessagesTransport(
+      transports: [first, second],
+      logger: const Logger(),
+    );
+    await transport.start();
+
+    await transport.sendFile(
+      const OutgoingTunnelFile(
+        fileName: 'file-1',
+        bytes: [1],
+        sequenceNumber: 1,
+        direction: Direction.c2r,
+      ),
+    );
+
+    expect(first.sent, isEmpty);
+    expect(second.sent.map((file) => file.sequenceNumber), [1]);
+    await transport.close();
+  });
+
+  test(
+    'load balanced transport retries same file after temporary account failure',
+    () async {
+      final first = _FakeTransport(
+        temporaryFailure: const BtunAccountTemporarilyUnavailable(
+          operation: 'send file-1',
+          reason: 'rate limited',
+          accountUserId: 11,
+        ),
+      );
+      final second = _FakeTransport();
+      final transport = LoadBalancedSavedMessagesTransport(
+        transports: [first, second],
+        logger: const Logger(),
+      );
+      await transport.start();
+
+      await transport.sendFile(
+        const OutgoingTunnelFile(
+          fileName: 'file-1',
+          bytes: [1],
+          sequenceNumber: 1,
+          direction: Direction.c2r,
+        ),
+      );
+
+      expect(first.sent.map((file) => file.sequenceNumber), [1]);
+      expect(second.sent.map((file) => file.sequenceNumber), [1]);
+      await transport.close();
+    },
+  );
+
+  test(
+    'load balanced transport fails temporarily when all accounts back off',
+    () async {
+      final first = _FakeTransport(
+        backoffUntil: DateTime.now().add(const Duration(minutes: 1)),
+      );
+      final second = _FakeTransport(
+        backoffUntil: DateTime.now().add(const Duration(minutes: 2)),
+      );
+      final transport = LoadBalancedSavedMessagesTransport(
+        transports: [first, second],
+        logger: const Logger(),
+      );
+      await transport.start();
+
+      await expectLater(
+        transport.sendFile(
+          const OutgoingTunnelFile(
+            fileName: 'file-1',
+            bytes: [1],
+            sequenceNumber: 1,
+            direction: Direction.c2r,
+          ),
+        ),
+        throwsA(isA<BtunAccountTemporarilyUnavailable>()),
+      );
+      await transport.close();
+    },
+  );
+
   test(
     'load balanced transport can add and remove accounts while running',
     () async {
@@ -133,12 +220,21 @@ void main() {
 }
 
 class _FakeTransport implements TunnelTransport {
+  _FakeTransport({this.backoffUntil, this.temporaryFailure});
+
   final sent = <OutgoingTunnelFile>[];
   final incoming = StreamController<IncomingTunnelFile>.broadcast();
+  final BtunAccountTemporarilyUnavailable? temporaryFailure;
   var closed = false;
 
   @override
-  bool get isBackingOff => false;
+  DateTime? backoffUntil;
+
+  @override
+  bool get isBackingOff {
+    final until = backoffUntil;
+    return until != null && DateTime.now().isBefore(until);
+  }
 
   @override
   Future<void> start() async {}
@@ -149,6 +245,8 @@ class _FakeTransport implements TunnelTransport {
   @override
   Future<void> sendFile(OutgoingTunnelFile file) async {
     sent.add(file);
+    final failure = temporaryFailure;
+    if (failure != null) throw failure;
   }
 
   @override

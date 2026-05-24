@@ -124,6 +124,9 @@ class _FakeTransport implements TunnelTransport {
   bool get isBackingOff => false;
 
   @override
+  DateTime? get backoffUntil => null;
+
+  @override
   Future<void> close() async {
     await _incoming.close();
   }

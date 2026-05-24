@@ -826,6 +826,55 @@ void main() {
     );
   });
 
+  test('retry-after delay parses seconds and HTTP dates', () {
+    final now = DateTime.utc(2026, 5, 24, 10);
+    expect(
+      retryAfterDelay(
+        BaleHttpException(
+          'Upload failed with HTTP 429',
+          stage: 'upload',
+          statusCode: 429,
+          host: 'example.com',
+          elapsed: Duration.zero,
+          headers: const {'retry-after': '45'},
+        ),
+        now: now,
+      ),
+      const Duration(seconds: 45),
+    );
+    expect(
+      retryAfterDelay(
+        BaleHttpException(
+          'Upload failed with HTTP 429',
+          stage: 'upload',
+          statusCode: 429,
+          host: 'example.com',
+          elapsed: Duration.zero,
+          headers: const {'retry-after': 'Sun, 24 May 2026 10:02:00 GMT'},
+        ),
+        now: now,
+      ),
+      const Duration(minutes: 2),
+    );
+  });
+
+  test('retry-after delay ignores missing or invalid values', () {
+    expect(
+      retryAfterDelay(
+        BaleHttpException(
+          'Upload failed with HTTP 429',
+          stage: 'upload',
+          statusCode: 429,
+          host: 'example.com',
+          elapsed: Duration.zero,
+          headers: const {'retry-after': 'invalid'},
+        ),
+      ),
+      isNull,
+    );
+    expect(retryAfterDelay(Exception('HTTP 429')), isNull);
+  });
+
   test(
     'saved messages upload pacing is serialized across concurrency',
     () async {
@@ -886,6 +935,49 @@ void main() {
       await transport.close();
     },
   );
+
+  test('saved messages upload rate limit fails fast for failover', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'btun_upload_failover_test_',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final client = _FakeBaleClient(
+      sendError: const BaleException('user_rate_limited', code: 8),
+    );
+    final transport = BaleSavedMessagesTransport(
+      client: client,
+      sessionId: 'testsession',
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      pollInterval: const Duration(days: 1),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      uploadMinInterval: Duration.zero,
+      uploadRateLimitPerMinute: 50,
+      logger: const Logger(),
+      maxConcurrentUploads: 1,
+      accountUserId: 42,
+    );
+
+    await expectLater(
+      transport.sendFile(
+        const OutgoingTunnelFile(
+          fileName: 'btun_testsession_c2r_1.btun',
+          bytes: [1],
+          sequenceNumber: 1,
+          direction: Direction.c2r,
+        ),
+      ),
+      throwsA(
+        isA<BtunAccountTemporarilyUnavailable>()
+            .having((error) => error.accountUserId, 'accountUserId', 42)
+            .having((error) => error.reason, 'reason', 'rate limited'),
+      ),
+    );
+
+    expect(transport.isBackingOff, isTrue);
+    expect(transport.backoffUntil, isNotNull);
+    await transport.close();
+  });
 
   test('config fills missing transport settings with stable defaults', () {
     final config = BtunConfig.fromJson({
@@ -983,10 +1075,11 @@ void main() {
 }
 
 class _FakeBaleClient extends BaleClient {
-  _FakeBaleClient();
+  _FakeBaleClient({this.sendError});
 
   final sentAt = <DateTime>[];
   final _updates = StreamController<BaleUpdate>.broadcast();
+  final Object? sendError;
 
   @override
   BaleSession? get session =>
@@ -1004,6 +1097,8 @@ class _FakeBaleClient extends BaleClient {
     void Function(int sent, int total)? onProgress,
   }) async {
     sentAt.add(DateTime.now());
+    final error = sendError;
+    if (error != null) throw error;
     return BaleMessage(
       chat: peer,
       senderId: session!.userId!,
@@ -1019,6 +1114,9 @@ class _FakeTransport implements TunnelTransport {
 
   @override
   bool get isBackingOff => false;
+
+  @override
+  DateTime? get backoffUntil => null;
 
   @override
   Future<void> close() async {

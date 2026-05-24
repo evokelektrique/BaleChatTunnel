@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:bale_client/bale_client.dart';
 
@@ -60,6 +61,9 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     final until = _backoffUntil;
     return until != null && DateTime.now().isBefore(until);
   }
+
+  @override
+  DateTime? get backoffUntil => isBackingOff ? _backoffUntil : null;
 
   BalePeer get _savedMessagesPeer {
     final userId = client.session?.userId;
@@ -147,7 +151,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   }
 
   Future<void> _sendFileNow(OutgoingTunnelFile file) async {
-    await _withRateLimitBackoff('send ${file.fileName}', () async {
+    await _withUploadFailoverBackoff('send ${file.fileName}', () async {
       await _reserveUploadAttempt();
       return client.sendDocument(
         peer: _savedMessagesPeer,
@@ -162,6 +166,47 @@ class BaleSavedMessagesTransport implements TunnelTransport {
       'sent upload seq=${file.sequenceNumber} bytes=${file.bytes.length}',
     );
     _logUploadWindowStats();
+  }
+
+  Future<T> _withUploadFailoverBackoff<T>(
+    String operation,
+    Future<T> Function() action,
+  ) async {
+    if (isBackingOff) {
+      throw BtunAccountTemporarilyUnavailable(
+        operation: operation,
+        reason: 'account is cooling down',
+        accountUserId: accountUserId,
+        retryAfter: backoffUntil,
+      );
+    }
+    try {
+      final result = await action();
+      _rateLimitFailures = 0;
+      return result;
+    } on Object catch (error) {
+      if (isBaleRateLimit(error)) {
+        _startBackoff(operation, error, rateLimit: true);
+        throw BtunAccountTemporarilyUnavailable(
+          operation: operation,
+          reason: 'rate limited',
+          accountUserId: accountUserId,
+          retryAfter: backoffUntil,
+          cause: error,
+        );
+      }
+      if (isBaleTransientHttpError(error)) {
+        _startBackoff(operation, error, rateLimit: false);
+        throw BtunAccountTemporarilyUnavailable(
+          operation: operation,
+          reason: 'transient HTTP error',
+          accountUserId: accountUserId,
+          retryAfter: backoffUntil,
+          cause: error,
+        );
+      }
+      rethrow;
+    }
   }
 
   Future<void> _reserveUploadAttempt() {
@@ -376,22 +421,26 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     if (rateLimit && operation.startsWith('send ')) {
       _lowerUploadRateLimit();
     }
-    final seconds = rateLimit
-        ? switch (_rateLimitFailures) {
-            1 => 15,
-            2 => 30,
-            3 => 60,
-            _ => 120,
-          }
-        : 60;
-    final until = DateTime.now().add(Duration(seconds: seconds));
+    final fallback = rateLimit
+        ? Duration(
+            seconds: switch (_rateLimitFailures) {
+              1 => 15,
+              2 => 30,
+              3 => 60,
+              _ => 120,
+            },
+          )
+        : const Duration(seconds: 60);
+    final retryAfter = retryAfterDelay(error);
+    final delay = retryAfter ?? fallback;
+    final until = DateTime.now().add(delay);
     final current = _backoffUntil;
     if (current == null || until.isAfter(current)) {
       _backoffUntil = until;
       final token = Object();
       _backoffToken = token;
       _backoffCompleter = Completer<void>();
-      Timer(Duration(seconds: seconds), () {
+      Timer(delay, () {
         if (_backoffToken != token) return;
         final completer = _backoffCompleter;
         if (completer != null && !completer.isCompleted) {
@@ -401,8 +450,11 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         _backoffToken = null;
       });
       final reason = rateLimit ? 'rate limited' : 'HTTP 500/transient error';
+      final source = retryAfter == null ? 'fallback' : 'retry-after';
       logger.warn(
-        'Bale $reason during $operation; backing off ${seconds}s '
+        'Bale $reason during $operation; backing off ${delay.inSeconds}s '
+        'source=$source '
+        'account=${accountUserId ?? 'unknown'} '
         '(rate_limits=$_rateLimitEvents transient_http=$_transientHttpEvents)',
       );
     } else {
@@ -447,6 +499,17 @@ class LoadBalancedSavedMessagesTransport implements TunnelTransport {
   bool get isBackingOff =>
       _transports.isNotEmpty &&
       _transports.values.every((transport) => transport.isBackingOff);
+
+  @override
+  DateTime? get backoffUntil {
+    DateTime? latest;
+    for (final transport in _transports.values) {
+      final until = transport.backoffUntil;
+      if (until == null) return null;
+      if (latest == null || until.isAfter(latest)) latest = until;
+    }
+    return latest;
+  }
 
   @override
   Future<void> start() async {
@@ -511,21 +574,48 @@ class LoadBalancedSavedMessagesTransport implements TunnelTransport {
       throw Exception('no enabled Bale accounts; add an account first');
     }
     Object? lastError;
-    final transports = _transports.values.toList(growable: false);
-    for (var attempt = 0; attempt < transports.length; attempt++) {
-      final index = (_nextUploadIndex + attempt) % transports.length;
-      final transport = transports[index];
-      if (transport.isBackingOff && attempt < _transports.length - 1) {
+    final entries = _transports.entries.toList(growable: false);
+    var skippedBackoff = 0;
+    for (var attempt = 0; attempt < entries.length; attempt++) {
+      final index = (_nextUploadIndex + attempt) % entries.length;
+      final entry = entries[index];
+      final transport = entry.value;
+      if (transport.isBackingOff) {
+        skippedBackoff += 1;
+        logger.warn(
+          'skipping Bale account ${entry.key}; cooling down until '
+          '${transport.backoffUntil?.toIso8601String() ?? 'unknown'}',
+        );
         continue;
       }
       try {
         await transport.sendFile(file);
-        _nextUploadIndex = (index + 1) % transports.length;
+        _nextUploadIndex = (index + 1) % entries.length;
         return;
+      } on BtunAccountTemporarilyUnavailable catch (error) {
+        lastError = error;
+        logger.warn(
+          'Bale account ${entry.key} unavailable; trying next account: $error',
+        );
       } on Object catch (error) {
         lastError = error;
-        logger.warn('account upload failed; trying next account: $error');
+        logger.warn(
+          'Bale account ${entry.key} upload failed; trying next account: '
+          '$error',
+        );
       }
+    }
+    final retryAfter = backoffUntil;
+    if (skippedBackoff == entries.length || retryAfter != null) {
+      logger.warn(
+        'all Bale accounts are cooling down; upload will retry later',
+      );
+      throw BtunAccountTemporarilyUnavailable(
+        operation: 'send ${file.fileName}',
+        reason: 'all accounts are cooling down',
+        retryAfter: retryAfter,
+        cause: lastError,
+      );
     }
     if (lastError != null) throw lastError;
   }
@@ -562,4 +652,32 @@ bool isBaleTransientHttpError(Object error) {
       text.contains('HTTP 502') ||
       text.contains('HTTP 503') ||
       text.contains('HTTP 504');
+}
+
+Duration? retryAfterDelay(Object error, {DateTime? now}) {
+  if (error is! BaleHttpException) return null;
+  final value = error.headers['retry-after']?.trim();
+  if (value == null || value.isEmpty) return null;
+  final seconds = int.tryParse(value);
+  if (seconds != null) {
+    if (seconds <= 0) return null;
+    return _clampRetryAfter(Duration(seconds: seconds));
+  }
+  final DateTime retryAt;
+  try {
+    retryAt = HttpDate.parse(value);
+  } on Exception {
+    return null;
+  }
+  final delay = retryAt.difference(now ?? DateTime.now());
+  if (delay <= Duration.zero) return null;
+  return _clampRetryAfter(delay);
+}
+
+Duration _clampRetryAfter(Duration delay) {
+  const min = Duration(seconds: 1);
+  const max = Duration(minutes: 30);
+  if (delay < min) return min;
+  if (delay > max) return max;
+  return delay;
 }
