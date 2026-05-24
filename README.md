@@ -5,16 +5,26 @@ uploading and downloading encrypted tunnel files.
 
 ## Quick Start
 
-Before starting, prepare one Bale account for the client and one for the relay.
-The client runs next to your app; the relay makes the outside network
-connections.
+You need:
 
-1. Open the desktop app on the client machine and go to Settings.
+- A client machine where your browser, OS, or app will connect.
+- A Linux x64 relay machine that will make the outside network connections.
+- A Bale account. You may use the same account on both machines, or use
+  separate accounts.
 
-If this is the first run, click `Initialize config`. Add the client Bale
-account, then copy `Client public key`.
+### 1. Set up the client
 
-2. Run the relay installer on a Linux x64 host:
+On the client machine:
+
+- Open the desktop app.
+- Go to Settings.
+- If this is the first run, click `Initialize config`.
+- Add a Bale account.
+- Copy `Client public key`.
+
+### 2. Set up the relay
+
+On the relay machine, run:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
@@ -27,12 +37,13 @@ Answer the installer prompts:
 - Add a Bale account when setup asks.
 - Copy the printed `relay_public_key`.
 
-3. Go back to client Settings.
+### 3. Finish the client
 
-Paste `relay_public_key` into `Relay public key`, then start the tunnel from
-Home.
+Back on the client machine:
 
-4. Configure your browser, OS, or app:
+- Paste `relay_public_key` into `Relay public key` in Settings.
+- Go to Home and start the tunnel.
+- Configure your browser, OS, or app to use:
 
 ```text
 SOCKS5 127.0.0.1:1080
