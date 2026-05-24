@@ -34,11 +34,11 @@ class BtunAdaptiveConfig {
   final int maxStreams;
 
   static const defaults = BtunAdaptiveConfig(
-    minPollInterval: Duration(milliseconds: 4000),
-    maxPollInterval: Duration(milliseconds: 4000),
-    minAckFlushInterval: Duration(milliseconds: 2000),
-    maxAckFlushInterval: Duration(milliseconds: 3000),
-    minFlushDelay: Duration(milliseconds: 800),
+    minPollInterval: Duration(milliseconds: 2000),
+    maxPollInterval: Duration(milliseconds: 2000),
+    minAckFlushInterval: Duration(milliseconds: 600),
+    maxAckFlushInterval: Duration(milliseconds: 800),
+    minFlushDelay: Duration(milliseconds: 150),
     maxFlushDelay: Duration(milliseconds: 1000),
     minUploadRatePerMinute: 40,
     maxUploadRatePerMinute: 50,

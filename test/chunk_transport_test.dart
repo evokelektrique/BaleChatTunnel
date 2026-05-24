@@ -1261,12 +1261,12 @@ void main() {
     expect(config.adaptive, BtunAdaptiveConfig.defaults);
     expect(config.chunkSize, 1024 * 1024);
     expect(config.maxInFlight, 1);
-    expect(config.pollInterval, const Duration(milliseconds: 4000));
-    expect(config.maxPollInterval, const Duration(milliseconds: 4000));
+    expect(config.pollInterval, const Duration(milliseconds: 2000));
+    expect(config.maxPollInterval, const Duration(milliseconds: 2000));
     expect(config.uploadMinInterval, Duration.zero);
     expect(config.uploadRateLimitPerMinute, 50);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 2000));
-    expect(config.flushDelay, const Duration(milliseconds: 800));
+    expect(config.ackFlushInterval, const Duration(milliseconds: 600));
+    expect(config.flushDelay, const Duration(milliseconds: 150));
     expect(config.bulkFlushDelay, const Duration(milliseconds: 1000));
     expect(config.bulkChunkSize, 2 * 1024 * 1024);
     expect(config.maxRetryChunks, 64);
@@ -1299,13 +1299,13 @@ void main() {
 
     expect(config.chunkSize, 1024 * 1024);
     expect(config.bulkChunkSize, 2 * 1024 * 1024);
-    expect(config.pollInterval, const Duration(milliseconds: 4000));
-    expect(config.maxPollInterval, const Duration(milliseconds: 4000));
+    expect(config.pollInterval, const Duration(milliseconds: 2000));
+    expect(config.maxPollInterval, const Duration(milliseconds: 2000));
     expect(config.adaptive.minUploadRatePerMinute, 40);
     expect(config.uploadRateLimitPerMinute, 50);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 2000));
-    expect(config.maxAckFlushInterval, const Duration(milliseconds: 3000));
-    expect(config.flushDelay, const Duration(milliseconds: 800));
+    expect(config.ackFlushInterval, const Duration(milliseconds: 600));
+    expect(config.maxAckFlushInterval, const Duration(milliseconds: 800));
+    expect(config.flushDelay, const Duration(milliseconds: 150));
     expect(config.bulkFlushDelay, const Duration(milliseconds: 1000));
   });
 
@@ -1323,18 +1323,18 @@ void main() {
     expect(config.uploadRateLimitPerMinute, 50);
   });
 
-  test('config defaults use stable chat bounds', () {
+  test('config defaults use balanced interactive bounds', () {
     final config = BtunConfig.defaults(profileDir: '.btun-test');
 
     expect(config.adaptive, BtunAdaptiveConfig.defaults);
     expect(config.chunkSize, 1024 * 1024);
     expect(config.maxInFlight, 1);
-    expect(config.pollInterval, const Duration(milliseconds: 4000));
-    expect(config.maxPollInterval, const Duration(milliseconds: 4000));
+    expect(config.pollInterval, const Duration(milliseconds: 2000));
+    expect(config.maxPollInterval, const Duration(milliseconds: 2000));
     expect(config.uploadMinInterval, Duration.zero);
     expect(config.uploadRateLimitPerMinute, 50);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 2000));
-    expect(config.flushDelay, const Duration(milliseconds: 800));
+    expect(config.ackFlushInterval, const Duration(milliseconds: 600));
+    expect(config.flushDelay, const Duration(milliseconds: 150));
     expect(config.bulkFlushDelay, const Duration(milliseconds: 1000));
     expect(config.bulkChunkSize, 2 * 1024 * 1024);
     expect(config.maxRetryChunks, 64);
