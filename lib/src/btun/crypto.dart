@@ -14,6 +14,7 @@ class KeyPairConfig {
   final String privateKey;
 }
 
+/// Encrypts tunnel chunks with keys derived from the local and peer X25519 keys.
 class BtunCrypto {
   BtunCrypto._(this._algorithm, this._sendSecret, this._receiveSecret);
 
@@ -53,6 +54,8 @@ class BtunCrypto {
       remotePublicKey: peer,
     );
     final sharedBytes = await shared.extractBytes();
+    // Directions use separate derived keys so replaying a client chunk as a
+    // relay chunk cannot authenticate under the opposite traffic direction.
     final sendSecret = await _derive(sharedBytes, config.sessionId, send);
     final receiveSecret = await _derive(sharedBytes, config.sessionId, receive);
     return BtunCrypto._(AesGcm.with256bits(), sendSecret, receiveSecret);
@@ -69,6 +72,8 @@ class BtunCrypto {
         compression: Lz4FrameCompression.fast,
       ),
     );
+    // Compression is only kept when it reduces the encrypted payload size.
+    // This avoids making already compressed traffic larger before upload.
     final useCompression = compressed.length < plain.length;
     final metadata = EncryptedChunkMetadata(
       version: chunk.version,
@@ -114,6 +119,8 @@ class BtunCrypto {
     String sessionId,
     Direction direction,
   ) {
+    // Bind keys to the tunnel session and direction to avoid cross-session
+    // reuse when the same peer keys are kept across profiles.
     return Hkdf(hmac: Hmac.sha256(), outputLength: 32).deriveKey(
       secretKey: SecretKey(sharedSecret),
       nonce: utf8.encode('btun:$sessionId'),

@@ -6,6 +6,7 @@ import 'chunk_transport.dart';
 import 'config.dart';
 import 'protocol.dart';
 
+/// Maps local outbound connections to multiplexed tunnel streams.
 class BtunClient {
   BtunClient({required this.config, required this.chunkTransport}) {
     _sub = chunkTransport.frames.listen(_handleFrame);
@@ -23,6 +24,8 @@ class BtunClient {
     int port, {
     Duration slotTimeout = const Duration(minutes: 2),
   }) async {
+    // Limit open streams before sending OPEN so the remote relay is not asked
+    // to create work the local side has already decided to reject.
     await _waitForStreamSlot(slotTimeout);
     final streamId = _nextStreamId();
     final stream = BtunStream._(
@@ -226,6 +229,7 @@ class BtunStream {
 
   Future<void> add(List<int> bytes) async {
     if (_closed || bytes.isEmpty) return;
+    // Tie local socket backpressure to Bale upload and retry pressure.
     await _waitUntilWritable();
     await _sendData(bytes);
   }

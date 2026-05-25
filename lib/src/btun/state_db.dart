@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+/// Small JSON state store for transport deduplication and stream diagnostics.
 class StateDb {
   StateDb._(this._file, this._state);
 
@@ -35,6 +36,8 @@ class StateDb {
   }
 
   bool hasProcessedMessage(String messageId) {
+    // Bale history polling can replay old documents. Message IDs prevent
+    // downloading the same tunnel file more than once.
     return _state.processedMessages.containsKey(messageId);
   }
 
@@ -44,6 +47,8 @@ class StateDb {
   }
 
   bool hasReceivedChunk(int sequenceNumber) {
+    // Chunk sequence numbers prevent duplicate frame delivery when the sender
+    // retries an upload before receiving an ACK.
     return _state.receivedChunks.containsKey(sequenceNumber.toString());
   }
 

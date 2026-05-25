@@ -57,11 +57,14 @@ void main() {
 
       final value = await wizard.promptTransferMode(
         'Transfer mode',
-        defaultValue: BtunTransferMode.balanced,
+        defaultValue: BtunTransferMode.bulk,
       );
 
       expect(value, BtunTransferMode.bulk);
-      expect(output.toString(), contains('Transfer mode [1 balanced]:'));
+      expect(
+        output.toString(),
+        contains('Transfer mode (1 balanced, 2 bulk, 3 low-latency) [2 bulk]:'),
+      );
     });
   });
 
@@ -81,7 +84,7 @@ void main() {
         BtunConfig.defaultConfigPath(temp.path),
       );
       expect(config.role, BtunRole.relay);
-      expect(config.transferMode, BtunTransferMode.balanced);
+      expect(config.transferMode, BtunTransferMode.bulk);
       expect(config.localPublicKey, isNotEmpty);
       expect(config.peerPublicKey, '');
       expect(output.toString(), contains('relay_public_key:'));

@@ -159,8 +159,9 @@ class BtunSetupWizard {
           defaultValue: defaults.transferMode,
           help:
               'Choose 1 for balanced, 2 for bulk, or 3 for low-latency. '
-              'balanced is the general-purpose default. bulk favors large '
-              'downloads/uploads with fewer Bale files. low-latency favors '
+              'bulk is the default and favors large downloads/uploads with '
+              'fewer Bale files. balanced is better for mixed traffic. '
+              'low-latency favors '
               'interactive browsing and quicker small writes.',
         );
     if (transferModeFromArgs != null) {
@@ -168,7 +169,6 @@ class BtunSetupWizard {
     }
     writeln('Adaptive transport is always enabled.');
     final maxRetryChunks = defaults.maxRetryChunks;
-    final maxRetryBytes = defaults.maxRetryBytes;
 
     final config = defaults.copyWith(
       role: role,
@@ -181,7 +181,6 @@ class BtunSetupWizard {
       socksPort: socksPort,
       transferMode: transferMode,
       maxRetryChunks: maxRetryChunks,
-      maxRetryBytes: maxRetryBytes,
     );
     var nextConfig = config;
     await nextConfig.save(configPath);
@@ -303,7 +302,7 @@ class BtunSetupWizard {
     String? help,
   }) {
     return _prompt<BtunTransferMode>(
-      label,
+      '$label (1 balanced, 2 bulk, 3 low-latency)',
       defaultText: _transferModeText(defaultValue),
       help: help,
       parse: (input) {

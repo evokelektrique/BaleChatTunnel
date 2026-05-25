@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'logger.dart';
 import 'tunnel_client.dart';
 
+/// Minimal SOCKS5 CONNECT server used as the local client entry point.
 class Socks5Server {
   Socks5Server({
     required this.host,
@@ -39,6 +40,8 @@ class Socks5Server {
       final request = await _readConnect(reader);
       remote = await client.open(request.host, request.port);
       socket.add([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+      // Once CONNECT succeeds, bytes are bridged directly between the local
+      // socket and the tunnel stream. Backpressure is applied by BtunStream.add.
       final remoteSub = remote.incoming.listen(
         (data) {
           try {
@@ -102,6 +105,8 @@ class Socks5Server {
     }
     final atyp = head[3];
     late final String host;
+    // Support IPv4, domain names, and IPv6 because clients choose the address
+    // form based on their own DNS and proxy settings.
     switch (atyp) {
       case 0x01:
         final bytes = await socket.readExactly(4);

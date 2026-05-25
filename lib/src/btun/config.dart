@@ -17,7 +17,7 @@ enum BtunTransferMode {
     for (final mode in values) {
       if (mode.name.toLowerCase() == normalized) return mode;
     }
-    return BtunTransferMode.balanced;
+    return BtunTransferMode.bulk;
   }
 }
 
@@ -317,7 +317,7 @@ class BtunConfig {
 
   static BtunConfig defaults({String profileDir = '.btun'}) => BtunConfig(
     role: BtunRole.client,
-    transferMode: BtunTransferMode.balanced,
+    transferMode: BtunTransferMode.bulk,
     accounts: const [],
     database: defaultDatabasePath(profileDir),
     sessionId: randomSessionId(),
@@ -329,7 +329,7 @@ class BtunConfig {
     adaptive: BtunAdaptiveConfig.defaults,
     retryTimeout: const Duration(milliseconds: 120000),
     maxRetryChunks: 64,
-    maxRetryBytes: 64 * 1024 * 1024,
+    maxRetryBytes: 128 * 1024 * 1024,
   );
 
   static String randomSessionId() {

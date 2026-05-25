@@ -5,6 +5,7 @@ import 'chunk_transport.dart';
 import 'logger.dart';
 import 'protocol.dart';
 
+/// Relay-side bridge from tunnel streams to outbound TCP sockets.
 class TcpRelay {
   TcpRelay({required this.chunkTransport, required this.logger});
 
@@ -67,6 +68,8 @@ class TcpRelay {
       }
       stream.socket = socket;
       stream.state = _RelayStreamState.open;
+      // DATA frames can arrive in the same chunk as OPEN. Buffer them until
+      // the socket connects, then drain in arrival order.
       for (final pending in stream.pendingData) {
         _addToSocket(frame.streamId, stream, pending);
       }
@@ -104,6 +107,8 @@ class TcpRelay {
     }
     final socket = stream.socket;
     if (socket == null) {
+      // Keep early data until the matching OPEN finishes. This preserves
+      // ordering for chunks that batch OPEN and DATA together.
       stream.pendingData.add(List<int>.from(data));
       return;
     }

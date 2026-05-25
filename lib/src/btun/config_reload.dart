@@ -5,6 +5,7 @@ import 'config.dart';
 
 enum BtunConfigReloadMode { none, live, rebuild }
 
+/// Classifies config changes by whether the running tunnel can apply them live.
 class BtunConfigDiff {
   const BtunConfigDiff(this.mode, this.reasons);
 
@@ -21,6 +22,8 @@ class BtunConfigDiff {
     if (!_sameAccounts(oldConfig.accounts, nextConfig.accounts)) {
       live.add('accounts');
     }
+    // Account list and upload pacing can change without replacing crypto,
+    // sockets, state database, or chunk sequencing.
     if (oldConfig.transferMode != nextConfig.transferMode ||
         oldConfig.adaptive != nextConfig.adaptive ||
         oldConfig.pollInterval != nextConfig.pollInterval ||
@@ -84,6 +87,7 @@ class BtunConfigDiff {
   }
 }
 
+/// Polls a config file for changes in CLI runtimes that run for a long time.
 class BtunConfigWatcher {
   BtunConfigWatcher({
     required this.path,

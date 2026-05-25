@@ -14,6 +14,7 @@ import 'state_db.dart';
 import 'tunnel_client.dart';
 import 'tunnel_transport.dart';
 
+/// Owns the client-side runtime objects that must start and stop together.
 class BtunClientRuntime {
   BtunClientRuntime({
     required this.bale,
@@ -78,6 +79,8 @@ class BtunClientRuntime {
     logger.info(
       'config changed; applying live reload: ${diff.reasons.join(', ')}',
     );
+    // Live reload is intentionally limited to Bale account membership and
+    // upload/poll tuning. Crypto, socket bind, and chunk sizing are rebuilt.
     await _reloadAccounts(nextConfig);
     transport.updateAccountSettings(
       pollInterval: nextConfig.pollInterval,
@@ -189,6 +192,8 @@ Future<BtunClientRuntime> createBtunClientRuntime({
       'peer_public_key is missing; exchange keys with btun init first',
     );
   }
+  // Restore all enabled Bale accounts before constructing the transport so
+  // uploads can fail over immediately when the tunnel starts.
   final clients = await _restoreAccountClients(config);
   final bale = clients.first;
   final crypto = await BtunCrypto.fromConfig(

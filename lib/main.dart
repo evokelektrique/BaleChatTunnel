@@ -6,11 +6,11 @@ import 'package:bale_chat_tunnel/btun.dart';
 import 'package:bale_client/bale_client.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 const appTitle = 'Bale Chat Tunnel';
-const appVersionLabel = '0.2.7';
 const appRepositoryUrl = 'https://github.com/evokelektrique/BaleChatTunnel';
 const settingsControlShape = RoundedRectangleBorder(
   borderRadius: BorderRadius.all(Radius.circular(8)),
@@ -25,6 +25,8 @@ Future<void> main() async {
 }
 
 Future<String> defaultGuiProfileDir() async {
+  // Android apps should keep profile data in the platform support directory.
+  // Desktop and CLI builds share the standard btun profile path.
   if (Platform.isAndroid) {
     final directory = await getApplicationSupportDirectory();
     return directory.path;
@@ -170,6 +172,9 @@ class BtunAppController extends ChangeNotifier {
 
   var page = BtunPage.home;
   var status = RuntimeStatus.loading;
+  // Starts true so widget tests and manually constructed controllers render the
+  // app shell immediately. main() calls load(), which toggles this for startup.
+  var hasLoaded = true;
   var themeMode = ThemeMode.system;
   String profileDir;
   BtunConfig? config;
@@ -199,6 +204,7 @@ class BtunAppController extends ChangeNotifier {
   String get appPrefsPath => '$profileDir/gui.json';
 
   Future<void> load() async {
+    hasLoaded = false;
     status = RuntimeStatus.loading;
     notifyListeners();
     try {
@@ -212,6 +218,7 @@ class BtunAppController extends ChangeNotifier {
       status = RuntimeStatus.error;
       _log(LogLevel.error, error!);
     }
+    hasLoaded = true;
     notifyListeners();
   }
 
@@ -642,6 +649,9 @@ class BtunHome extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (!controller.hasLoaded) {
+      return const BrandedSplashScreen();
+    }
     final compact = MediaQuery.sizeOf(context).width < 760;
     final content = AnimatedBuilder(
       animation: controller,
@@ -717,6 +727,40 @@ class BtunHome extends StatelessWidget {
                 Expanded(child: content),
               ],
             ),
+    );
+  }
+}
+
+class BrandedSplashScreen extends StatelessWidget {
+  const BrandedSplashScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Image.asset(
+              'resources/logo/source/app_icon_512.png',
+              width: 112,
+              height: 112,
+            ),
+            const SizedBox(height: 20),
+            Text(appTitle, style: Theme.of(context).textTheme.headlineSmall),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.5,
+                color: scheme.primary,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1443,7 +1487,7 @@ class _SettingsTabState extends State<SettingsTab> {
                 AdaptiveSummary(config: config),
                 const SizedBox(height: 10),
                 ResponsiveOptionGroup<BtunTransferMode>(
-                  selected: config?.transferMode ?? BtunTransferMode.balanced,
+                  selected: config?.transferMode ?? BtunTransferMode.bulk,
                   options: const [
                     OptionItem(
                       value: BtunTransferMode.balanced,
@@ -1590,12 +1634,16 @@ class _SettingsTabState extends State<SettingsTab> {
 
   void _scheduleSave() {
     if (widget.controller.isRunning) return;
+    // Text fields save after a short pause so editing several settings does not
+    // rewrite the profile on every keystroke.
     saveDebounce?.cancel();
     saveDebounce = Timer(const Duration(milliseconds: 450), _save);
   }
 
   void _scheduleCustomPerformanceSave() {
     if (widget.controller.isRunning) return;
+    // Performance changes include advanced transport fields that normal
+    // settings edits intentionally leave untouched.
     saveDebounce?.cancel();
     saveDebounce = Timer(
       const Duration(milliseconds: 450),
@@ -1776,7 +1824,7 @@ class AdaptiveSummary extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
     final activeConfig = config;
-    final mode = activeConfig?.transferMode ?? BtunTransferMode.balanced;
+    final mode = activeConfig?.transferMode ?? BtunTransferMode.bulk;
     final title = switch (mode) {
       BtunTransferMode.balanced => 'Balanced',
       BtunTransferMode.bulk => 'Bulk',
@@ -1846,13 +1894,25 @@ class AboutCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            '$appTitle $appVersionLabel',
-            style: Theme.of(context).textTheme.titleSmall,
+          Text(appTitle, style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 4),
+          FutureBuilder<PackageInfo>(
+            // Read platform metadata so the About card stays aligned with
+            // pubspec.yaml after version bumps.
+            future: PackageInfo.fromPlatform(),
+            builder: (context, snapshot) {
+              final version = snapshot.data?.version;
+              return Text(
+                version == null ? 'Version unavailable' : 'Version $version',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+              );
+            },
           ),
           const SizedBox(height: 6),
           Text(
-            'A VPN tunnel over Bale messenger.',
+            'Uploads and downloads encrypted tunnel files through Bale Messenger.',
             style: Theme.of(
               context,
             ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),

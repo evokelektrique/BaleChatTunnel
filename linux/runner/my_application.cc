@@ -1,5 +1,8 @@
 #include "my_application.h"
 
+#include <limits.h>
+#include <unistd.h>
+
 #include <flutter_linux/flutter_linux.h>
 #ifdef GDK_WINDOWING_X11
 #include <gdk/gdkx.h>
@@ -17,6 +20,27 @@ G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
   gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
+}
+
+static gchar* bundled_resource_path(const gchar* name) {
+  gchar executable_path[PATH_MAX + 1] = {};
+  ssize_t length =
+      readlink("/proc/self/exe", executable_path, sizeof(executable_path) - 1);
+  if (length <= 0) {
+    return g_build_filename("resources", name, nullptr);
+  }
+  executable_path[length] = '\0';
+  g_autofree gchar* executable_dir = g_path_get_dirname(executable_path);
+  return g_build_filename(executable_dir, "resources", name, nullptr);
+}
+
+static void set_window_icon(GtkWindow* window) {
+  g_autofree gchar* icon_path = bundled_resource_path("app_icon.png");
+  g_autoptr(GError) error = nullptr;
+  if (!gtk_window_set_icon_from_file(window, icon_path, &error)) {
+    g_warning("Failed to load window icon from %s: %s", icon_path,
+              error->message);
+  }
 }
 
 // Implements GApplication::activate.
@@ -52,6 +76,8 @@ static void my_application_activate(GApplication* application) {
     gtk_window_set_title(window, "Bale Chat Tunnel");
   }
 
+  // Resolve the icon beside the executable so launchers can use any cwd.
+  set_window_icon(window);
   gtk_window_set_default_size(window, 1280, 720);
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();

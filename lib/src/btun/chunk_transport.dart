@@ -6,6 +6,7 @@ import 'protocol.dart';
 import 'state_db.dart';
 import 'tunnel_transport.dart';
 
+/// Batches tunnel frames into encrypted files and handles ACK-based retries.
 class ChunkTransport {
   ChunkTransport({
     required this.transport,
@@ -88,6 +89,8 @@ class ChunkTransport {
       _queuedBytes >= chunkSize * 2;
 
   Future<void> waitUntilWritable() async {
+    // Backpressure protects memory and avoids producing files faster than Bale
+    // can accept them during rate limits or retry pressure.
     while (!_closed && isCongested) {
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
@@ -117,6 +120,8 @@ class ChunkTransport {
       if (_isBulkData(frame)) hasBulkData = true;
       if (_isInteractiveData(frame)) hasInteractiveData = true;
     }
+    // Control frames and early stream data are flushed sooner. Sustained data
+    // is allowed to build larger files for better upload efficiency.
     if (_queuedBytes >= _currentChunkTarget) {
       await flush();
       return;
@@ -132,6 +137,8 @@ class ChunkTransport {
   }
 
   Future<void> flush() {
+    // Serialize flushes so concurrent stream writes cannot reuse a sequence
+    // number or split the queued frame list inconsistently.
     _flushTail = _flushTail.then((_) => _flushNow());
     return _flushTail;
   }
@@ -145,6 +152,8 @@ class ChunkTransport {
     _queuedBytes = 0;
     final ackNumbers = _pendingAcks.toList()..sort();
     if (ackNumbers.isNotEmpty) {
+      // ACKs are piggybacked onto outgoing chunks when possible to reduce the
+      // number of Bale files created for pure control traffic.
       for (final ackNumber in ackNumbers) {
         frames.add(
           TunnelFrame.ack(
@@ -172,6 +181,8 @@ class ChunkTransport {
     final bytes = encrypted.encode();
     final fileName = btunFileName(sessionId, sendDirection, sequence);
     final ackOnly = frames.every((frame) => frame.type == FrameType.ack);
+    // ACK-only chunks are not retried because they acknowledge retry state and
+    // do not need their own acknowledgement cycle.
     if (!ackOnly) _cacheRetry(sequence, fileName, bytes);
     try {
       await _sendFile(sequence, fileName, bytes, trackAck: !ackOnly);
@@ -218,6 +229,8 @@ class ChunkTransport {
       if (!duplicate) {
         stateDb.markReceivedChunk(chunk.sequenceNumber);
       }
+      // Duplicate chunks can arrive from retries or repeated Bale history
+      // polling. They still carry ACKs, but data frames are delivered once.
       var shouldAck = false;
       for (final frame in chunk.frames) {
         if (frame.type == FrameType.ack) {
@@ -335,6 +348,8 @@ class ChunkTransport {
     final chunkLimit = maxRetryChunks <= 0 ? 1 : maxRetryChunks;
     final byteLimit = maxRetryBytes <= 0 ? chunkSize : maxRetryBytes;
     while (_retryCache.length > chunkLimit || _retryCacheBytes > byteLimit) {
+      // Dropping the oldest retry record is preferable to unbounded memory use
+      // when the peer or Bale transport is unavailable for an extended period.
       final oldest = _retryCache.keys.reduce((a, b) => a < b ? a : b);
       final removed = _retryCache.remove(oldest);
       if (removed == null) break;
@@ -492,6 +507,8 @@ class _StreamChunkState {
 
   void update(int bytes, DateTime now, ChunkTransport transport) {
     if (now.difference(lastDataAt) >= transport.streamIdleTimeout) {
+      // After an idle gap, treat the next bytes as interactive again so a fresh
+      // page load or command does not wait behind bulk cadence.
       firstDataAt = now;
       frameCount = 0;
       totalBytes = 0;

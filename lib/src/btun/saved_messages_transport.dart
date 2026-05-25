@@ -6,6 +6,7 @@ import 'protocol.dart';
 import 'state_db.dart';
 import 'tunnel_transport.dart';
 
+/// Sends and receives tunnel files through the account's Bale Saved Messages.
 class BaleSavedMessagesTransport implements TunnelTransport {
   BaleSavedMessagesTransport({
     required this.client,
@@ -81,6 +82,8 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   @override
   Future<void> start() async {
     if (_updates != null) return;
+    // Realtime updates provide low-latency delivery. Polling remains enabled as
+    // a recovery path for missed update events or reconnect gaps.
     _updates = client.updates.listen((update) {
       if (update case BaleMessageUpdate(:final message)) {
         unawaited(_maybeDownload(message));
@@ -118,6 +121,8 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   @override
   Future<void> sendFile(OutgoingTunnelFile file) async {
     final existing = _queuedUploads[file.sequenceNumber];
+    // A retry for the same sequence should wait on the original upload attempt
+    // instead of sending duplicate documents while the first is queued.
     if (existing != null) return existing;
     logger.info(
       'queued upload seq=${file.sequenceNumber} bytes=${file.bytes.length}',
@@ -147,6 +152,8 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     final limit = configuredLimit < adaptiveLimit
         ? configuredLimit
         : adaptiveLimit;
+    // Uploads are paced through a small worker loop so rate-limit backoff can
+    // pause future files without blocking callers that enqueue chunks.
     while (_activeUploads < limit && _pendingUploads.isNotEmpty) {
       final upload = _pendingUploads.removeAt(0);
       _activeUploads += 1;
@@ -269,6 +276,8 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         ? message.messageId.toString()
         : '$accountUserId:${message.messageId}';
     if (stateDb.hasProcessedMessage(messageId)) return;
+    // Bale history can return the same document repeatedly. Store message IDs
+    // before emitting files so the chunk layer sees each document once.
     final active = _activeDownloads[messageId];
     if (active != null) {
       await active;
@@ -443,6 +452,8 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     }
     final uploadOperation = operation.startsWith('send ');
     if (uploadOperation) _lowerUploadRateLimit();
+    // Bale does not always return a retry-after value, so use conservative
+    // local cooldowns that grow after repeated rate-limit failures.
     final fallback = rateLimit
         ? Duration(
             seconds: switch (_rateLimitFailures) {
@@ -642,6 +653,8 @@ class LoadBalancedSavedMessagesTransport implements TunnelTransport {
     Object? lastError;
     final entries = _transports.entries.toList(growable: false);
     var skippedBackoff = 0;
+    // Rotate upload attempts across enabled accounts. Accounts in cooldown are
+    // skipped so one limited account does not stall the whole tunnel.
     for (var attempt = 0; attempt < entries.length; attempt++) {
       final index = (_nextUploadIndex + attempt) % entries.length;
       final entry = entries[index];

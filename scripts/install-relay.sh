@@ -48,10 +48,11 @@ btun installer: next steps
 
   3. Pick or change the transfer mode when needed.
      In interactive setup, enter 1 for balanced, 2 for bulk, or 3 for
-     low-latency. balanced is the default, bulk favors large transfers, and
-     low-latency favors interactive browsing. To persist a relay preference:
+     low-latency. bulk is the default for large transfers, balanced is for
+     mixed traffic, and low-latency favors interactive browsing. To persist
+     a relay preference:
 
-       $install_dir/$binary_name init --profile "$profile" --transfer-mode balanced
+       $install_dir/$binary_name init --profile "$profile" --transfer-mode bulk
 
 EOF
   if command -v systemctl >/dev/null 2>&1 && [ "$install_service" != "0" ]; then

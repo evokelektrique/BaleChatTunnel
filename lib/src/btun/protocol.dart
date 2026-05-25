@@ -5,6 +5,7 @@ const _plainChunkMagic = 0x32505442; // BTP2
 const _encryptedChunkMagic = 0x32455442; // BTE2
 const _nullStringLength = 0xffff;
 
+/// File direction on the Bale Saved Messages transport.
 enum Direction {
   c2r,
   r2c;
@@ -16,6 +17,7 @@ enum Direction {
   };
 }
 
+/// Logical tunnel messages carried inside encrypted chunk files.
 enum FrameType {
   hello,
   ready,
@@ -36,6 +38,7 @@ enum FrameType {
   }
 }
 
+/// A single stream event inside the tunnel protocol.
 class TunnelFrame {
   const TunnelFrame({
     required this.version,
@@ -178,6 +181,7 @@ class TunnelFrame {
   }
 }
 
+/// A batch of frames before compression and encryption.
 class PlainChunk {
   const PlainChunk({
     required this.version,
@@ -194,6 +198,8 @@ class PlainChunk {
   final List<TunnelFrame> frames;
 
   Uint8List encode() {
+    // The binary format keeps tunnel files compact. JSON decoding remains below
+    // for compatibility with older files written before the binary format.
     final writer = _BinaryWriter()
       ..writeUint32(_plainChunkMagic)
       ..writeUint8(version)
@@ -288,6 +294,7 @@ class PlainChunk {
   }
 }
 
+/// Authenticated metadata for an encrypted tunnel file.
 class EncryptedChunkMetadata {
   const EncryptedChunkMetadata({
     required this.version,
@@ -306,6 +313,8 @@ class EncryptedChunkMetadata {
   final bool compressed;
 
   List<int> aad() {
+    // Metadata is not secret, but it must be authenticated so chunks cannot be
+    // moved across sessions, directions, or sequence numbers.
     if (version <= 1 && !compressed) {
       return utf8.encode(
         'btun|$version|$sessionId|${direction.name}|$sequenceNumber',
@@ -344,6 +353,7 @@ class EncryptedChunkMetadata {
   }
 }
 
+/// Complete encrypted file payload uploaded to Bale Saved Messages.
 class EncryptedChunkFile {
   const EncryptedChunkFile({
     required this.metadata,

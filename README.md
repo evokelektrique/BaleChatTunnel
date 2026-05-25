@@ -1,7 +1,29 @@
-# Bale Chat Tunnel
+<p align="center">
+  <img src="resources/banner.png" alt="Bale Chat Tunnel banner" width="100%">
+</p>
 
-Bale Chat Tunnel carries network traffic through Bale Saved Messages by
-uploading and downloading encrypted tunnel files.
+<p align="center">
+  <img src="resources/logo/source/app_icon_512.png" alt="Bale Chat Tunnel logo" width="112">
+</p>
+
+<h1 align="center">Bale Chat Tunnel</h1>
+
+A tunnel that moves traffic through Bale Messenger by uploading and downloading encrypted files.
+
+Bale Chat Tunnel uses Bale Saved Messages as the transport layer. The client
+packs traffic into encrypted tunnel files, uploads them to Bale, and the relay
+downloads, decrypts, and forwards them. Responses travel back the same way:
+encrypted files are uploaded by the relay and downloaded by the client.
+
+## Contents
+
+- [Quick Start](#quick-start)
+- [Architecture & Configuration](#architecture-configuration)
+- [Development](#development)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Quick Start
 
@@ -79,7 +101,7 @@ journalctl --user -u btun-relay -f
 Installer options:
 
 ```bash
-BTUN_VERSION=v0.2.7 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
+BTUN_VERSION=v0.2.8 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
 BTUN_INSTALL_DIR=/usr/local/bin BTUN_PROFILE=/etc/btun/relay bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
 BTUN_RUN_SETUP=0 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
 BTUN_INSTALL_SERVICE=0 bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunnel/master/scripts/install-relay.sh)
@@ -96,7 +118,43 @@ Set `BTUN_REMOVE_PROFILE=0` to keep `~/.btun-relay`.
 
 </details>
 
-## Configuration
+## Architecture & Configuration
+
+> This is intentionally slow. It is meant as an emergency access path for
+> situations where normal internet access is difficult, censored, or blocked,
+> not as a replacement for a regular VPN or proxy.
+
+Architecture:
+
+- The client accepts local application traffic and maps each connection to a
+  tunnel stream.
+- Stream events become tunnel frames: `open`, `data`, `ack`, `close`, `reset`,
+  and related control messages.
+- Frames are batched into binary chunk files with a session ID, direction,
+  sequence number, stream ID, ACK number, and payload bytes.
+- Bale Saved Messages is the transport layer. The client uploads encrypted
+  client-to-relay chunk files; the relay downloads them, forwards the traffic,
+  and uploads encrypted relay-to-client response files.
+- Chunk filenames include the tunnel session, direction, and sequence number so
+  each side can filter only the files meant for that tunnel.
+- Received chunks are tracked in local state to avoid duplicate processing.
+  Non-ACK chunks stay in a retry cache until the other side acknowledges them.
+- Multiple Bale accounts can be enabled. Uploads are load-balanced, and accounts
+  that hit rate limits or transient HTTP errors are skipped until their backoff
+  period ends.
+
+Security and transport:
+
+- X25519 key pairs are generated locally and exchanged between client and relay.
+- HKDF-SHA256 derives separate per-session send and receive keys from the shared
+  secret, session ID, and traffic direction.
+- AES-GCM with 256-bit keys encrypts and authenticates every chunk file.
+- Chunk metadata is authenticated as AES-GCM associated data, including session,
+  direction, sequence number, and compression flag.
+- LZ4 frame compression runs before encryption and is used only when it makes the
+  chunk smaller.
+- Wrong-session, wrong-direction, corrupted, or undecryptable tunnel files are
+  ignored instead of being forwarded.
 
 Profiles store tunnel config, Bale session state, and local runtime state. The
 default CLI profile is `.btun`; this README uses `.btun-client` and
@@ -111,15 +169,32 @@ Browser/App
 SOCKS5 127.0.0.1:1080
     |
     v
-client -> Bale -> relay -> Internet
+client
+    |
+    v
+Bale Messenger (Saved Messages)
+    |
+    v
+relay
+    |
+    v
+Internet
 ```
 
 Important defaults:
 
-| Setting | Default |
-| --- | --- |
+| Setting        | Default          |
+| -------------- | ---------------- |
 | SOCKS endpoint | `127.0.0.1:1080` |
-| Transport | Adaptive |
+| Transport mode | `bulk`           |
+
+Transport modes:
+
+- `bulk`: Default mode. Uses larger chunks and slower flushes for downloads or sustained transfers.
+- `balanced`: General-purpose mode for browsing and mixed traffic.
+- `low-latency`: Flushes small writes sooner for interactive traffic.
+
+All modes trade speed for resilience through Bale file uploads and polling.
 
 Use matching session IDs on both profiles, and make sure each profile has the
 other side's public key.
@@ -185,10 +260,8 @@ make test
 
 ## Contributing
 
-Use GitHub Issues for bugs, build problems, feature requests, and UI feedback:
-
-https://github.com/evokelektrique/BaleChatTunnel/issues
+Use [GitHub Issues](https://github.com/evokelektrique/BaleChatTunnel/issues) for bugs, build problems, feature requests, and UI feedback.
 
 ## License
 
-MIT License.
+[MIT License](./LICENSE).

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Bale Chat Tunnel
+Comment=Tunnel traffic through Bale Messenger encrypted files
+Exec=bale_chat_tunnel
+Icon=io.github.evokelektrique.bale_chat_tunnel
+Terminal=false
+Categories=Network;

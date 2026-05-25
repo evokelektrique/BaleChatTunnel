@@ -143,6 +143,7 @@ void main() {
       final clientKeys = await BtunCrypto.generateKeyPair();
       final relayKeys = await BtunCrypto.generateKeyPair();
       final config = BtunConfig.defaults(profileDir: temp.path).copyWith(
+        transferMode: BtunTransferMode.balanced,
         sessionId: 'testsession',
         localPublicKey: clientKeys.publicKey,
         localPrivateKey: clientKeys.privateKey,
@@ -369,6 +370,7 @@ void main() {
       final clientKeys = await BtunCrypto.generateKeyPair();
       final relayKeys = await BtunCrypto.generateKeyPair();
       final config = BtunConfig.defaults(profileDir: temp.path).copyWith(
+        transferMode: BtunTransferMode.balanced,
         sessionId: 'testsession',
         localPublicKey: clientKeys.publicKey,
         localPrivateKey: clientKeys.privateKey,
@@ -416,6 +418,7 @@ void main() {
     final clientKeys = await BtunCrypto.generateKeyPair();
     final relayKeys = await BtunCrypto.generateKeyPair();
     final config = BtunConfig.defaults(profileDir: temp.path).copyWith(
+      transferMode: BtunTransferMode.balanced,
       sessionId: 'testsession',
       localPublicKey: clientKeys.publicKey,
       localPrivateKey: clientKeys.privateKey,
@@ -1404,6 +1407,7 @@ void main() {
     final clientKeys = await BtunCrypto.generateKeyPair();
     final relayKeys = await BtunCrypto.generateKeyPair();
     final config = BtunConfig.defaults(profileDir: temp.path).copyWith(
+      transferMode: BtunTransferMode.balanced,
       sessionId: 'testsession',
       localPublicKey: clientKeys.publicKey,
       localPrivateKey: clientKeys.privateKey,
@@ -1453,7 +1457,7 @@ void main() {
     await chunkTransport.close();
   });
 
-  test('config fills missing transport settings with adaptive defaults', () {
+  test('config fills missing transport settings with bulk defaults', () {
     final config = BtunConfig.fromJson({
       'role': 'client',
       'session_file': 'session.json',
@@ -1464,29 +1468,30 @@ void main() {
     });
 
     expect(config.adaptive, BtunAdaptiveConfig.defaults);
-    expect(config.chunkSize, 1024 * 1024);
+    expect(config.transferMode, BtunTransferMode.bulk);
+    expect(config.chunkSize, 4 * 1024 * 1024);
     expect(config.maxInFlight, 1);
     expect(config.pollInterval, const Duration(milliseconds: 2000));
     expect(config.maxPollInterval, const Duration(milliseconds: 2000));
     expect(config.uploadMinInterval, Duration.zero);
-    expect(config.uploadRateLimitPerMinute, 50);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 600));
-    expect(config.flushDelay, const Duration(milliseconds: 150));
-    expect(config.bulkFlushDelay, const Duration(milliseconds: 1000));
-    expect(config.bulkChunkSize, 2 * 1024 * 1024);
+    expect(config.uploadRateLimitPerMinute, 30);
+    expect(config.ackFlushInterval, const Duration(milliseconds: 800));
+    expect(config.flushDelay, const Duration(seconds: 3));
+    expect(config.bulkFlushDelay, const Duration(seconds: 3));
+    expect(config.bulkChunkSize, 4 * 1024 * 1024);
     expect(config.maxRetryChunks, 64);
-    expect(config.maxRetryBytes, 64 * 1024 * 1024);
+    expect(config.maxRetryBytes, 128 * 1024 * 1024);
   });
 
-  test('config defaults to balanced transfer mode', () {
+  test('config defaults to bulk transfer mode', () {
     final config = BtunConfig.defaults(profileDir: '.btun-test');
 
-    expect(config.transferMode, BtunTransferMode.balanced);
-    expect(config.chunkSize, 1024 * 1024);
-    expect(config.bulkChunkSize, 2 * 1024 * 1024);
-    expect(config.flushDelay, const Duration(milliseconds: 150));
-    expect(config.uploadRateLimitPerMinute, 50);
-    expect(config.interactiveChunkSize, 4096);
+    expect(config.transferMode, BtunTransferMode.bulk);
+    expect(config.chunkSize, 4 * 1024 * 1024);
+    expect(config.bulkChunkSize, 4 * 1024 * 1024);
+    expect(config.flushDelay, const Duration(seconds: 3));
+    expect(config.uploadRateLimitPerMinute, 30);
+    expect(config.interactiveChunkSize, 4 * 1024 * 1024);
   });
 
   test('bulk transfer mode applies large cadence preset', () {
@@ -1530,6 +1535,7 @@ void main() {
       'session_id': 'testsession',
       'local_public_key': '',
       'local_private_key': '',
+      'transfer_mode': 'balanced',
       'adaptive': {
         'min_poll_interval_ms': 300,
         'max_poll_interval_ms': 300,
@@ -1569,25 +1575,26 @@ void main() {
       'upload_rate_limit_per_minute': 40,
     });
 
-    expect(config.uploadRateLimitPerMinute, 50);
+    expect(config.uploadRateLimitPerMinute, 30);
   });
 
-  test('config defaults use balanced interactive bounds', () {
+  test('config defaults use bulk bounds', () {
     final config = BtunConfig.defaults(profileDir: '.btun-test');
 
     expect(config.adaptive, BtunAdaptiveConfig.defaults);
-    expect(config.chunkSize, 1024 * 1024);
+    expect(config.transferMode, BtunTransferMode.bulk);
+    expect(config.chunkSize, 4 * 1024 * 1024);
     expect(config.maxInFlight, 1);
     expect(config.pollInterval, const Duration(milliseconds: 2000));
     expect(config.maxPollInterval, const Duration(milliseconds: 2000));
     expect(config.uploadMinInterval, Duration.zero);
-    expect(config.uploadRateLimitPerMinute, 50);
-    expect(config.ackFlushInterval, const Duration(milliseconds: 600));
-    expect(config.flushDelay, const Duration(milliseconds: 150));
-    expect(config.bulkFlushDelay, const Duration(milliseconds: 1000));
-    expect(config.bulkChunkSize, 2 * 1024 * 1024);
+    expect(config.uploadRateLimitPerMinute, 30);
+    expect(config.ackFlushInterval, const Duration(milliseconds: 800));
+    expect(config.flushDelay, const Duration(seconds: 3));
+    expect(config.bulkFlushDelay, const Duration(seconds: 3));
+    expect(config.bulkChunkSize, 4 * 1024 * 1024);
     expect(config.maxRetryChunks, 64);
-    expect(config.maxRetryBytes, 64 * 1024 * 1024);
+    expect(config.maxRetryBytes, 128 * 1024 * 1024);
   });
 }
 
