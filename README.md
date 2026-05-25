@@ -274,3 +274,7 @@ Use [GitHub Issues](https://github.com/evokelektrique/BaleChatTunnel/issues) for
 ## License
 
 [MIT License](./LICENSE).
+
+## Cake
+
+The cake is a lie.
