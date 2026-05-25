@@ -9,7 +9,11 @@ import 'protocol.dart';
 /// Maps local outbound connections to multiplexed tunnel streams.
 class BtunClient {
   BtunClient({required this.config, required this.chunkTransport}) {
-    _sub = chunkTransport.frames.listen(_handleFrame);
+    _sub = chunkTransport.frames.listen(
+      _handleFrame,
+      onError: _handleTransportError,
+      onDone: _handleTransportClosed,
+    );
   }
 
   final BtunConfig config;
@@ -18,15 +22,19 @@ class BtunClient {
   final _streams = <int, BtunStream>{};
   final _slotWaiters = <Completer<void>>[];
   late final StreamSubscription<TunnelFrame> _sub;
+  var _closed = false;
+  Object? _closeError;
 
   Future<BtunStream> open(
     String host,
     int port, {
     Duration slotTimeout = const Duration(minutes: 2),
   }) async {
+    _throwIfClosed();
     // Limit open streams before sending OPEN so the remote relay is not asked
     // to create work the local side has already decided to reject.
     await _waitForStreamSlot(slotTimeout);
+    _throwIfClosed();
     final streamId = _nextStreamId();
     final stream = BtunStream._(
       streamId: streamId,
@@ -108,6 +116,28 @@ class BtunClient {
     }
   }
 
+  void _handleTransportError(Object error, StackTrace stackTrace) {
+    _failAllStreams(error);
+  }
+
+  void _handleTransportClosed() {
+    _failAllStreams(StateError('tunnel transport closed'));
+  }
+
+  void _failAllStreams(Object error) {
+    if (_closed) return;
+    _closed = true;
+    _closeError = error;
+    for (final stream in _streams.values.toList()) {
+      stream._fail(error);
+    }
+    _streams.clear();
+    for (final waiter in _slotWaiters.toList()) {
+      if (!waiter.isCompleted) waiter.completeError(error);
+    }
+    _slotWaiters.clear();
+  }
+
   Future<void> _sendData(int streamId, List<int> bytes) {
     return chunkTransport.sendFrame(
       TunnelFrame.data(
@@ -155,6 +185,7 @@ class BtunClient {
     final limit = config.maxStreams <= 0 ? 1 : config.maxStreams;
     final deadline = DateTime.now().add(timeout);
     while (_streams.length >= limit) {
+      _throwIfClosed();
       final remaining = deadline.difference(DateTime.now());
       if (remaining <= Duration.zero) {
         throw TimeoutException(
@@ -185,6 +216,11 @@ class BtunClient {
   }
 
   Future<void> close() async {
+    if (_closed) {
+      await _sub.cancel();
+      return;
+    }
+    _closed = true;
     for (final stream in _streams.values.toList()) {
       await stream.close();
     }
@@ -193,6 +229,11 @@ class BtunClient {
     }
     _slotWaiters.clear();
     await _sub.cancel();
+  }
+
+  void _throwIfClosed() {
+    if (!_closed) return;
+    throw StateError('tunnel client closed: ${_closeError ?? 'closed'}');
   }
 }
 
@@ -269,6 +310,15 @@ class BtunStream {
     _closed = true;
     if (!_incoming.isClosed) {
       _incoming.addError(Exception(message));
+      _incoming.close();
+    }
+    _onClosed();
+  }
+
+  void _fail(Object error) {
+    _closed = true;
+    if (!_incoming.isClosed) {
+      _incoming.addError(error);
       _incoming.close();
     }
     _onClosed();

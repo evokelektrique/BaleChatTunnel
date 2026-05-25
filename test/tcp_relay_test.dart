@@ -112,6 +112,112 @@ void main() {
     await relay.close();
     await relayChunkTransport.close();
   });
+
+  test('relay destroys active sockets when chunk frames close', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'btun_relay_close_test_',
+    );
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async {
+      await server.close();
+      await temp.delete(recursive: true);
+    });
+
+    final accepted = Completer<void>();
+    final socketDone = Completer<void>();
+    server.listen((socket) {
+      if (!accepted.isCompleted) accepted.complete();
+      socket.listen(
+        (_) {},
+        onDone: () {
+          if (!socketDone.isCompleted) socketDone.complete();
+        },
+        onError: (_) {
+          if (!socketDone.isCompleted) socketDone.complete();
+        },
+        cancelOnError: true,
+      );
+    }, onError: (_) {});
+
+    final clientKeys = await BtunCrypto.generateKeyPair();
+    final relayKeys = await BtunCrypto.generateKeyPair();
+    final sessionId = 'relayclosetest';
+    final clientConfig = BtunConfig.defaults(profileDir: temp.path).copyWith(
+      sessionId: sessionId,
+      localPublicKey: clientKeys.publicKey,
+      localPrivateKey: clientKeys.privateKey,
+      peerPublicKey: relayKeys.publicKey,
+    );
+    final relayConfig = BtunConfig.defaults(profileDir: temp.path).copyWith(
+      sessionId: sessionId,
+      localPublicKey: relayKeys.publicKey,
+      localPrivateKey: relayKeys.privateKey,
+      peerPublicKey: clientKeys.publicKey,
+    );
+    final fakeTransport = _FakeTransport();
+    final relayChunkTransport = ChunkTransport(
+      transport: fakeTransport,
+      crypto: await BtunCrypto.fromConfig(
+        relayConfig,
+        send: Direction.r2c,
+        receive: Direction.c2r,
+      ),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      sessionId: sessionId,
+      sendDirection: Direction.r2c,
+      receiveDirection: Direction.c2r,
+      chunkSize: relayConfig.chunkSize,
+      retryTimeout: relayConfig.retryTimeout,
+      maxInFlight: 1,
+      logger: const Logger(),
+      flushDelay: const Duration(milliseconds: 20),
+      controlFlushDelay: const Duration(milliseconds: 20),
+      ackDelay: const Duration(milliseconds: 20),
+    );
+    final relay = TcpRelay(
+      chunkTransport: relayChunkTransport,
+      logger: const Logger(),
+    );
+    await relayChunkTransport.start();
+    await relay.start();
+
+    final clientCrypto = await BtunCrypto.fromConfig(
+      clientConfig,
+      send: Direction.c2r,
+      receive: Direction.r2c,
+    );
+    final chunk = await clientCrypto.encrypt(
+      PlainChunk(
+        version: 1,
+        sessionId: sessionId,
+        direction: Direction.c2r,
+        sequenceNumber: 1,
+        frames: [
+          TunnelFrame.open(
+            sessionId: sessionId,
+            direction: Direction.c2r,
+            streamId: 7,
+            sequenceNumber: 1,
+            host: InternetAddress.loopbackIPv4.address,
+            port: server.port,
+          ),
+        ],
+      ),
+    );
+    fakeTransport.addIncoming(
+      IncomingTunnelFile(
+        messageId: '1',
+        fileName: btunFileName(sessionId, Direction.c2r, 1),
+        bytes: chunk.encode(),
+      ),
+    );
+    await accepted.future.timeout(const Duration(seconds: 3));
+
+    await relayChunkTransport.close();
+    await socketDone.future.timeout(const Duration(seconds: 3));
+
+    await relay.close();
+  });
 }
 
 class _FakeTransport implements TunnelTransport {

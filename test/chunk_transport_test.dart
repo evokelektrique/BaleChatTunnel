@@ -1104,6 +1104,44 @@ void main() {
     expect(received.map((frame) => frame.payload.single), [1, 2, 3]);
   });
 
+  test('chunk transport anchors non-one first receive window', () async {
+    final harness = await _ChunkHarness.create(
+      'btun_reorder_baseline_test_',
+      receiveBaselineDelay: const Duration(milliseconds: 20),
+    );
+    addTearDown(harness.dispose);
+    final received = <TunnelFrame>[];
+    final sub = harness.chunkTransport.frames.listen(received.add);
+    addTearDown(sub.cancel);
+
+    await harness.addRemoteChunk(9, payload: [9]);
+    await harness.addRemoteChunk(10, payload: [10]);
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+
+    expect(received.map((frame) => frame.payload.single), [9, 10]);
+  });
+
+  test(
+    'chunk transport orders initial baseline window by lowest chunk',
+    () async {
+      final harness = await _ChunkHarness.create(
+        'btun_reorder_baseline_order_test_',
+        receiveBaselineDelay: const Duration(milliseconds: 20),
+      );
+      addTearDown(harness.dispose);
+      final received = <TunnelFrame>[];
+      final sub = harness.chunkTransport.frames.listen(received.add);
+      addTearDown(sub.cancel);
+
+      await harness.addRemoteChunk(11, payload: [11]);
+      await harness.addRemoteChunk(9, payload: [9]);
+      await harness.addRemoteChunk(10, payload: [10]);
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+
+      expect(received.map((frame) => frame.payload.single), [9, 10, 11]);
+    },
+  );
+
   test('chunk transport acks duplicates without delivering twice', () async {
     final harness = await _ChunkHarness.create(
       'btun_reorder_duplicate_test_',
@@ -1122,6 +1160,29 @@ void main() {
     expect(received.map((frame) => frame.payload.single), [1]);
     expect(harness.transport.sent, hasLength(2));
   });
+
+  test(
+    'chunk transport catches files emitted during transport start',
+    () async {
+      final harness = await _ChunkHarness.create(
+        'btun_start_race_test_',
+        autoStart: false,
+      );
+      addTearDown(harness.dispose);
+      final received = <TunnelFrame>[];
+      final sub = harness.chunkTransport.frames.listen(received.add);
+      addTearDown(sub.cancel);
+      harness.transport.startIncoming = await harness.remoteFile(
+        1,
+        payload: [1],
+      );
+
+      await harness.chunkTransport.start();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(received.map((frame) => frame.payload.single), [1]);
+    },
+  );
 
   test('chunk transport holds future chunks until the gap fills', () async {
     final harness = await _ChunkHarness.create('btun_reorder_gap_test_');
@@ -1148,9 +1209,12 @@ void main() {
       'btun_reorder_ack_test_',
       retryTimeout: Duration.zero,
       retryTick: const Duration(milliseconds: 20),
+      receiveGapTimeout: const Duration(seconds: 1),
     );
     addTearDown(harness.dispose);
 
+    await harness.addRemoteChunk(1, payload: [1]);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
     await harness.chunkTransport.sendFrame(
       TunnelFrame.data(
         sessionId: harness.clientConfig.sessionId,
@@ -1163,11 +1227,118 @@ void main() {
     await harness.chunkTransport.flush();
     final ackedSequence = harness.transport.sent.single.sequenceNumber;
 
-    await harness.addRemoteChunk(2, payload: [2], ackNumber: ackedSequence);
+    await harness.addRemoteChunk(3, payload: [3], ackNumber: ackedSequence);
     await Future<void>.delayed(const Duration(milliseconds: 80));
 
     expect(harness.transport.sent, hasLength(1));
   });
+
+  test(
+    'chunk transport closes when established receive gap times out',
+    () async {
+      final harness = await _ChunkHarness.create(
+        'btun_reorder_gap_timeout_test_',
+        receiveGapTimeout: const Duration(milliseconds: 20),
+      );
+      addTearDown(harness.dispose);
+      final received = <TunnelFrame>[];
+      final done = Completer<void>();
+      final sub = harness.chunkTransport.frames.listen(
+        received.add,
+        onDone: done.complete,
+      );
+      addTearDown(sub.cancel);
+
+      await harness.addRemoteChunk(1, payload: [1]);
+      await harness.addRemoteChunk(3, payload: [3]);
+
+      await done.future.timeout(const Duration(seconds: 1));
+      expect(received.map((frame) => frame.payload.single), [1]);
+    },
+  );
+
+  test(
+    'closed chunk transport rejects future sends and writable waits',
+    () async {
+      final harness = await _ChunkHarness.create(
+        'btun_closed_send_test_',
+        receiveGapTimeout: const Duration(milliseconds: 20),
+      );
+      addTearDown(harness.dispose);
+      final done = Completer<void>();
+      final sub = harness.chunkTransport.frames.listen(
+        (_) {},
+        onDone: done.complete,
+      );
+      addTearDown(sub.cancel);
+
+      await harness.addRemoteChunk(1, payload: [1]);
+      await harness.addRemoteChunk(3, payload: [3]);
+      await done.future.timeout(const Duration(seconds: 1));
+
+      final frame = TunnelFrame.data(
+        sessionId: harness.clientConfig.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 1,
+        payload: [9],
+      );
+      await expectLater(
+        harness.chunkTransport.sendFrame(frame),
+        throwsA(isA<ChunkTransportClosedException>()),
+      );
+      await expectLater(
+        harness.chunkTransport.sendFrames([frame]),
+        throwsA(isA<ChunkTransportClosedException>()),
+      );
+      await expectLater(
+        harness.chunkTransport.waitUntilWritable(),
+        throwsA(isA<ChunkTransportClosedException>()),
+      );
+    },
+  );
+
+  test('fatal receive gap does not flush ack for held chunk', () async {
+    final harness = await _ChunkHarness.create(
+      'btun_fatal_ack_test_',
+      ackDelay: const Duration(minutes: 1),
+      receiveGapTimeout: const Duration(milliseconds: 20),
+    );
+    addTearDown(harness.dispose);
+    final done = Completer<void>();
+    final sub = harness.chunkTransport.frames.listen(
+      (_) {},
+      onDone: done.complete,
+    );
+    addTearDown(sub.cancel);
+
+    await harness.addRemoteChunk(1, payload: [1]);
+    await harness.addRemoteChunk(3, payload: [3]);
+    await done.future.timeout(const Duration(seconds: 1));
+
+    expect(harness.transport.sent, isEmpty);
+  });
+
+  test(
+    'timestamp-like first inbound chunk anchors after baseline grace',
+    () async {
+      final harness = await _ChunkHarness.create(
+        'btun_timestamp_baseline_test_',
+        receiveBaselineDelay: const Duration(milliseconds: 20),
+      );
+      addTearDown(harness.dispose);
+      final received = <TunnelFrame>[];
+      final sub = harness.chunkTransport.frames.listen(received.add);
+      addTearDown(sub.cancel);
+      final first = DateTime.now().millisecondsSinceEpoch;
+
+      await harness.addRemoteChunk(first + 1, payload: [2]);
+      await harness.addRemoteChunk(first, payload: [1]);
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+
+      expect(received.map((frame) => frame.payload.single), [1, 2]);
+    },
+  );
 
   test('chunk transport closes on reorder buffer overflow', () async {
     final harness = await _ChunkHarness.create(
@@ -1181,6 +1352,41 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 40));
 
     await expectLater(harness.chunkTransport.frames, emitsDone);
+  });
+
+  test('btun client fails active streams when chunk frames close', () async {
+    final harness = await _ChunkHarness.create(
+      'btun_client_transport_close_test_',
+      receiveGapTimeout: const Duration(milliseconds: 20),
+    );
+    addTearDown(harness.dispose);
+    final client = BtunClient(
+      config: harness.clientConfig,
+      chunkTransport: harness.chunkTransport,
+    );
+    addTearDown(client.close);
+
+    final stream = await client.open('example.com', 443);
+    final incomingDone = Completer<void>();
+    final sub = stream.incoming.listen(
+      (_) {},
+      onError: (_) {
+        if (!incomingDone.isCompleted) incomingDone.complete();
+      },
+      onDone: () {
+        if (!incomingDone.isCompleted) incomingDone.complete();
+      },
+    );
+    addTearDown(sub.cancel);
+
+    await harness.addRemoteChunk(1, payload: [1]);
+    await harness.addRemoteChunk(3, payload: [3]);
+    await incomingDone.future.timeout(const Duration(seconds: 1));
+
+    await expectLater(
+      client.open('example.org', 443, slotTimeout: const Duration(seconds: 1)),
+      throwsA(isA<StateError>()),
+    );
   });
 
   test('rate limit detection recognizes Bale code 8', () {
@@ -1765,6 +1971,7 @@ class _FakeTransport implements TunnelTransport {
   final sent = <OutgoingTunnelFile>[];
   final _incoming = StreamController<IncomingTunnelFile>.broadcast();
   Object? temporaryFailure;
+  IncomingTunnelFile? startIncoming;
 
   @override
   bool get isBackingOff => false;
@@ -1788,7 +1995,12 @@ class _FakeTransport implements TunnelTransport {
   }
 
   @override
-  Future<void> start() async {}
+  Future<void> start() async {
+    final incoming = startIncoming;
+    if (incoming != null) {
+      _incoming.add(incoming);
+    }
+  }
 
   void addIncoming(IncomingTunnelFile file) {
     _incoming.add(file);
@@ -1816,6 +2028,9 @@ class _ChunkHarness {
     Duration retryTimeout = const Duration(minutes: 1),
     Duration retryTick = const Duration(seconds: 10),
     int maxReorderChunks = 128,
+    Duration receiveBaselineDelay = const Duration(seconds: 2),
+    Duration? receiveGapTimeout,
+    bool autoStart = true,
   }) async {
     final temp = await Directory.systemTemp.createTemp(tempPrefix);
     final clientKeys = await BtunCrypto.generateKeyPair();
@@ -1853,8 +2068,10 @@ class _ChunkHarness {
       ackDelay: ackDelay,
       retryTick: retryTick,
       maxReorderChunks: maxReorderChunks,
+      receiveBaselineDelay: receiveBaselineDelay,
+      receiveGapTimeout: receiveGapTimeout,
     );
-    await chunkTransport.start();
+    if (autoStart) await chunkTransport.start();
     final relayCrypto = await BtunCrypto.fromConfig(
       relayConfig,
       send: Direction.r2c,
@@ -1870,6 +2087,16 @@ class _ChunkHarness {
   }
 
   Future<void> addRemoteChunk(
+    int sequenceNumber, {
+    required List<int> payload,
+    int? ackNumber,
+  }) async {
+    transport.addIncoming(
+      await remoteFile(sequenceNumber, payload: payload, ackNumber: ackNumber),
+    );
+  }
+
+  Future<IncomingTunnelFile> remoteFile(
     int sequenceNumber, {
     required List<int> payload,
     int? ackNumber,
@@ -1898,17 +2125,15 @@ class _ChunkHarness {
         frames: frames,
       ),
     );
-    transport.addIncoming(
-      IncomingTunnelFile(
-        messageId:
-            'remote-$sequenceNumber-${DateTime.now().microsecondsSinceEpoch}',
-        fileName: btunFileName(
-          clientConfig.sessionId,
-          Direction.r2c,
-          sequenceNumber,
-        ),
-        bytes: incoming.encode(),
+    return IncomingTunnelFile(
+      messageId:
+          'remote-$sequenceNumber-${DateTime.now().microsecondsSinceEpoch}',
+      fileName: btunFileName(
+        clientConfig.sessionId,
+        Direction.r2c,
+        sequenceNumber,
       ),
+      bytes: incoming.encode(),
     );
   }
 

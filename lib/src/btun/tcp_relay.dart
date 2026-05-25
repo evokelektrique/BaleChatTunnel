@@ -16,9 +16,23 @@ class TcpRelay {
   StreamSubscription<TunnelFrame>? _sub;
 
   Future<void> start() async {
-    _sub = chunkTransport.frames.listen((frame) {
-      unawaited(_handleFrame(frame));
-    });
+    _sub = chunkTransport.frames.listen(
+      (frame) {
+        unawaited(
+          _handleFrame(frame).catchError((Object error) {
+            logger.warn('relay frame handling failed: $error');
+          }),
+        );
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        logger.warn('relay transport closed with error: $error');
+        _destroyActiveStreams();
+      },
+      onDone: () {
+        logger.warn('relay transport closed; destroying active sockets');
+        _destroyActiveStreams();
+      },
+    );
   }
 
   Future<void> _handleFrame(TunnelFrame frame) async {
@@ -80,16 +94,22 @@ class TcpRelay {
         return;
       }
       socket.listen(
-        (data) => unawaited(_sendData(frame.streamId, data)),
-        onDone: () => unawaited(_sendClose(frame.streamId)),
+        (data) => _sendRelayData(frame.streamId, data),
+        onDone: () => _sendRelayClose(frame.streamId),
         onError: (Object error) =>
-            unawaited(_reset(frame.streamId, error.toString())),
+            _sendRelayReset(frame.streamId, error.toString()),
         cancelOnError: true,
       );
     } on Object catch (error) {
       logger.warn('relay open failed for $host:$port: $error');
       _streams.remove(frame.streamId)?.destroy();
-      await _reset(frame.streamId, error.toString());
+      try {
+        await _reset(frame.streamId, error.toString());
+      } on Object catch (sendError) {
+        logger.warn(
+          'relay reset send failed stream=${frame.streamId}: $sendError',
+        );
+      }
     }
   }
 
@@ -160,6 +180,36 @@ class TcpRelay {
     );
   }
 
+  void _sendRelayData(int streamId, List<int> data) {
+    unawaited(
+      _sendData(streamId, data).catchError((Object error) {
+        logger.warn('relay DATA send failed stream=$streamId: $error');
+        _closedStreams.add(streamId);
+        _streams.remove(streamId)?.destroy();
+      }),
+    );
+  }
+
+  void _sendRelayClose(int streamId) {
+    unawaited(
+      _sendClose(streamId).catchError((Object error) {
+        logger.warn('relay CLOSE send failed stream=$streamId: $error');
+        _closedStreams.add(streamId);
+        _streams.remove(streamId)?.destroy();
+      }),
+    );
+  }
+
+  void _sendRelayReset(int streamId, String message) {
+    unawaited(
+      _reset(streamId, message).catchError((Object error) {
+        logger.warn('relay RESET send failed stream=$streamId: $error');
+        _closedStreams.add(streamId);
+        _streams.remove(streamId)?.destroy();
+      }),
+    );
+  }
+
   Future<void> _sendClose(int streamId) {
     _closedStreams.add(streamId);
     _streams.remove(streamId);
@@ -194,6 +244,13 @@ class TcpRelay {
     }
     _streams.clear();
     _closedStreams.clear();
+  }
+
+  void _destroyActiveStreams() {
+    for (final stream in _streams.values.toList()) {
+      stream.destroy();
+    }
+    _streams.clear();
   }
 }
 

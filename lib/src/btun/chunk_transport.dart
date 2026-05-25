@@ -36,9 +36,9 @@ class ChunkTransport {
     this.retryTick = const Duration(seconds: 10),
     this.maxReorderChunks = 128,
     this.maxReorderBytes = 256 * 1024 * 1024,
-  }) {
-    _nextReceiveSequence = stateDb.nextExpectedReceivedChunk();
-  }
+    this.receiveBaselineDelay = const Duration(seconds: 2),
+    this.receiveGapTimeout,
+  });
 
   final TunnelTransport transport;
   final BtunCrypto crypto;
@@ -67,6 +67,8 @@ class ChunkTransport {
   final Duration retryTick;
   final int maxReorderChunks;
   final int maxReorderBytes;
+  final Duration receiveBaselineDelay;
+  final Duration? receiveGapTimeout;
 
   final StreamController<TunnelFrame> _frames =
       StreamController<TunnelFrame>.broadcast();
@@ -74,6 +76,8 @@ class ChunkTransport {
   Timer? _retryTimer;
   Timer? _flushTimer;
   Timer? _ackTimer;
+  Timer? _receiveBaselineTimer;
+  Timer? _receiveGapTimer;
   Future<void> _flushTail = Future.value();
   final _queuedFrames = <TunnelFrame>[];
   final _streamStates = <int, _StreamChunkState>{};
@@ -84,9 +88,10 @@ class ChunkTransport {
   final _reorderBuffer = <int, _BufferedChunk>{};
   final _deliveredReceivedSequences = <int>{};
   var _reorderBufferBytes = 0;
-  var _nextSequence = 1;
-  var _nextReceiveSequence = 1;
+  var _nextSequence = DateTime.now().millisecondsSinceEpoch;
+  int? _nextReceiveSequence;
   var _closed = false;
+  String? _closedReason;
   var _retryInProgress = false;
   DateTime? _retryNotBefore;
   DateTime? _receiveGapSince;
@@ -105,20 +110,21 @@ class ChunkTransport {
     while (!_closed && isCongested) {
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
+    _throwIfClosed();
   }
 
   Future<void> start() async {
-    await transport.start();
     _incomingSub = transport.incomingFiles().listen((file) {
       unawaited(_handleIncoming(file));
     });
+    await transport.start();
     _retryTimer = Timer.periodic(retryTick, (_) {
       unawaited(_retryDue());
     });
   }
 
   Future<void> sendFrames(List<TunnelFrame> frames) async {
-    if (_closed) return;
+    _throwIfClosed();
     var hasUrgentControl = false;
     var hasInteractiveControl = false;
     var hasBulkData = false;
@@ -254,9 +260,10 @@ class ChunkTransport {
         }
       }
       if (hasDataOrControl) _scheduleAck(chunk.sequenceNumber);
+      final expected = _nextReceiveSequence?.toString() ?? 'baseline';
       logger.info(
         'received chunk seq=${chunk.sequenceNumber} '
-        'expected=$_nextReceiveSequence buffered=${_reorderBuffer.length} '
+        'expected=$expected buffered=${_reorderBuffer.length} '
         'duplicate=${deliveredDuplicate || bufferedDuplicate}',
       );
       if (!hasDataOrControl || deliveredDuplicate || bufferedDuplicate) return;
@@ -269,24 +276,42 @@ class ChunkTransport {
   }
 
   void _bufferOrDeliver(PlainChunk chunk) {
-    if (_isLegacyInitialChunk(chunk.sequenceNumber)) {
-      logger.info(
-        'accepting legacy initial receive sequence ${chunk.sequenceNumber}',
-      );
-      _nextReceiveSequence = chunk.sequenceNumber;
+    final expected = _nextReceiveSequence;
+    if (expected == null) {
+      if (chunk.sequenceNumber == 1) {
+        _establishReceiveBaseline(1, reason: 'first chunk');
+        _deliverChunk(chunk);
+        _drainReorderBuffer();
+        return;
+      }
+      _bufferChunk(chunk);
+      _scheduleReceiveBaseline();
+      _enforceReorderLimit();
+      return;
     }
-    if (chunk.sequenceNumber < _nextReceiveSequence) {
+    if (chunk.sequenceNumber < expected) {
       logger.info(
         'skipping already delivered chunk seq=${chunk.sequenceNumber} '
-        'expected=$_nextReceiveSequence',
+        'expected=$expected',
       );
       return;
     }
-    if (chunk.sequenceNumber == _nextReceiveSequence) {
+    if (chunk.sequenceNumber == expected) {
       _deliverChunk(chunk);
       _drainReorderBuffer();
       return;
     }
+    _bufferChunk(chunk);
+    logger.warn(
+      'holding out-of-order chunk seq=${chunk.sequenceNumber} '
+      'expected=$expected buffered=${_reorderBuffer.length} '
+      'bytes=$_reorderBufferBytes gap_age_ms=${_gapAgeMs()}',
+    );
+    _scheduleReceiveGapTimeout();
+    _enforceReorderLimit();
+  }
+
+  void _bufferChunk(PlainChunk chunk) {
     final encodedBytes = _estimateChunkBytes(chunk);
     _reorderBuffer[chunk.sequenceNumber] = _BufferedChunk(
       chunk: chunk,
@@ -295,27 +320,43 @@ class ChunkTransport {
     );
     _reorderBufferBytes += encodedBytes;
     _receiveGapSince ??= DateTime.now();
-    logger.warn(
-      'holding out-of-order chunk seq=${chunk.sequenceNumber} '
-      'expected=$_nextReceiveSequence buffered=${_reorderBuffer.length} '
-      'bytes=$_reorderBufferBytes gap_age_ms=${_gapAgeMs()}',
-    );
-    _enforceReorderLimit();
   }
 
-  bool _isLegacyInitialChunk(int sequenceNumber) {
-    // Older builds started chunk numbers from the current epoch millisecond.
-    // New sessions start at 1 so missing early chunks can be detected.
-    return _nextReceiveSequence == 1 &&
-        _reorderBuffer.isEmpty &&
-        _deliveredReceivedSequences.isEmpty &&
-        sequenceNumber > 1000000000000;
+  void _scheduleReceiveBaseline() {
+    if (_closed || _receiveBaselineTimer != null) return;
+    if (receiveBaselineDelay == Duration.zero) {
+      _establishReceiveBaselineFromBuffer('initial chunk');
+      return;
+    }
+    _receiveBaselineTimer = Timer(receiveBaselineDelay, () {
+      _receiveBaselineTimer = null;
+      _establishReceiveBaselineFromBuffer('baseline timeout');
+    });
+  }
+
+  void _establishReceiveBaselineFromBuffer(String reason) {
+    if (_nextReceiveSequence != null || _reorderBuffer.isEmpty) return;
+    final baseline = _reorderBuffer.keys.reduce((a, b) => a < b ? a : b);
+    _establishReceiveBaseline(baseline, reason: reason);
+    _drainReorderBuffer();
+  }
+
+  void _establishReceiveBaseline(int sequenceNumber, {required String reason}) {
+    _receiveBaselineTimer?.cancel();
+    _receiveBaselineTimer = null;
+    _nextReceiveSequence = sequenceNumber;
+    logger.warn(
+      'receive baseline set to chunk $sequenceNumber ($reason); '
+      'earlier chunks are unavailable in current receive window',
+    );
   }
 
   void _drainReorderBuffer() {
     var recoveredGap = false;
     while (true) {
-      final buffered = _reorderBuffer.remove(_nextReceiveSequence);
+      final expected = _nextReceiveSequence;
+      if (expected == null) return;
+      final buffered = _reorderBuffer.remove(expected);
       if (buffered == null) break;
       _reorderBufferBytes -= buffered.estimatedBytes;
       recoveredGap = true;
@@ -327,7 +368,14 @@ class ChunkTransport {
         'buffered=${_reorderBuffer.length}',
       );
     }
-    if (_reorderBuffer.isEmpty) _receiveGapSince = null;
+    if (_reorderBuffer.isEmpty) {
+      _receiveGapSince = null;
+      _receiveGapTimer?.cancel();
+      _receiveGapTimer = null;
+    } else {
+      _receiveGapSince = DateTime.now();
+      _scheduleReceiveGapTimeout();
+    }
   }
 
   void _deliverChunk(PlainChunk chunk) {
@@ -351,9 +399,43 @@ class ChunkTransport {
       'expected=$_nextReceiveSequence buffered=${_reorderBuffer.length} '
       'bytes=$_reorderBufferBytes limits=$chunkLimit/$byteLimit',
     );
-    _reorderBuffer.clear();
-    _reorderBufferBytes = 0;
-    unawaited(close());
+    _fatalClose(
+      'receive reorder buffer overflow expected=$_nextReceiveSequence',
+    );
+  }
+
+  void _scheduleReceiveGapTimeout() {
+    if (_closed || _nextReceiveSequence == null || _receiveGapTimer != null) {
+      return;
+    }
+    final timeout = _effectiveReceiveGapTimeout;
+    if (timeout <= Duration.zero) {
+      _closeForReceiveGap();
+      return;
+    }
+    _receiveGapTimer = Timer(timeout, () {
+      _receiveGapTimer = null;
+      _closeForReceiveGap();
+    });
+  }
+
+  Duration get _effectiveReceiveGapTimeout {
+    final configured = receiveGapTimeout;
+    if (configured != null) return configured;
+    return retryTimeout * 2;
+  }
+
+  void _closeForReceiveGap() {
+    if (_closed || _reorderBuffer.isEmpty || _nextReceiveSequence == null) {
+      return;
+    }
+    logger.warn(
+      'fatal receive-ordering timeout; closing tunnel '
+      'expected=$_nextReceiveSequence '
+      'buffered=${_reorderBuffer.length} bytes=$_reorderBufferBytes '
+      'gap_age_ms=${_gapAgeMs()}',
+    );
+    _fatalClose('receive gap timed out expected=$_nextReceiveSequence');
   }
 
   int _estimateChunkBytes(PlainChunk chunk) {
@@ -440,13 +522,39 @@ class ChunkTransport {
   }
 
   Future<void> close() async {
+    if (_closed) return;
     await flush();
+    await _closeInternal('closed');
+  }
+
+  void _fatalClose(String reason) {
+    if (_closed) return;
+    logger.warn('fatal tunnel close: $reason');
+    unawaited(_closeInternal(reason));
+  }
+
+  Future<void> _closeInternal(String reason) async {
+    if (_closed) return;
     _closed = true;
+    _closedReason = reason;
     _retryTimer?.cancel();
     _flushTimer?.cancel();
     _ackTimer?.cancel();
+    _receiveBaselineTimer?.cancel();
+    _receiveGapTimer?.cancel();
+    _queuedFrames.clear();
+    _queuedBytes = 0;
+    _pendingAcks.clear();
+    _reorderBuffer.clear();
+    _reorderBufferBytes = 0;
+    _receiveGapSince = null;
     await _incomingSub?.cancel();
     await _frames.close();
+  }
+
+  void _throwIfClosed() {
+    if (!_closed) return;
+    throw ChunkTransportClosedException(_closedReason ?? 'closed');
   }
 
   void _cacheRetry(int sequence, String fileName, List<int> bytes) {
@@ -683,4 +791,13 @@ class _BufferedChunk {
   final PlainChunk chunk;
   final int estimatedBytes;
   final DateTime receivedAt;
+}
+
+class ChunkTransportClosedException implements Exception {
+  const ChunkTransportClosedException(this.reason);
+
+  final String reason;
+
+  @override
+  String toString() => 'ChunkTransportClosedException: $reason';
 }
