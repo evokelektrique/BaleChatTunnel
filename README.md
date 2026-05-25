@@ -35,7 +35,15 @@ You need:
 - A Linux x64 relay machine that will make the outside network connections.
 - A Bale account. You may use the same account on both machines.
 
-### 1. Set up the client
+### 1. Download the app
+
+Download the build you need from the
+[latest release](https://github.com/evokelektrique/BaleChatTunnel/releases/latest):
+
+- Client app: Linux x64, Windows x64, or Android 7.0+ APK.
+- Relay app: Linux x64.
+
+### 2. Set up the client
 
 On the client machine:
 
@@ -45,7 +53,7 @@ On the client machine:
 - Add a Bale account.
 - Copy `Client public key`.
 
-### 2. Set up the relay
+### 3. Set up the relay
 
 On the relay machine, run:
 
@@ -60,7 +68,7 @@ Answer the installer prompts:
 - Add a Bale account when setup asks.
 - Copy the printed `relay_public_key`.
 
-### 3. Finish the client
+### 4. Finish the client
 
 Back on the client machine:
 
