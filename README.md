@@ -1,10 +1,16 @@
+<p align="center">
+  <img src="resources/logo/source/app_icon_512.png" alt="Bale Chat Tunnel logo" width="112">
+</p>
 
+<h1 align="center">Bale Chat Tunnel</h1>
 
-# Bale Chat Tunnel
+<p align="center">
+  A tunnel that moves traffic through Bale Messenger by uploading and downloading encrypted files.
+</p>
 
-A tunnel that moves traffic through Bale Messenger by uploading and downloading encrypted files.
-
-
+<p align="center">
+  <img src="resources/banner.png" alt="Bale Chat Tunnel banner" width="100%">
+</p>
 
 Bale Chat Tunnel uses Bale Saved Messages as the transport layer. The client
 packs traffic into encrypted tunnel files, uploads them to Bale, and the relay
@@ -66,7 +72,8 @@ Back on the client machine:
 SOCKS5 127.0.0.1:1080
 ```
 
-Advanced usage
+<details>
+<summary>Advanced usage</summary>
 
 Set up and run a client from the CLI:
 
@@ -110,7 +117,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/evokelektrique/BaleChatTunne
 
 Set `BTUN_REMOVE_PROFILE=0` to keep `~/.btun-relay`.
 
-
+</details>
 
 ## Architecture & Configuration
 
@@ -121,34 +128,34 @@ Set `BTUN_REMOVE_PROFILE=0` to keep `~/.btun-relay`.
 Architecture:
 
 - The client accepts local application traffic and maps each connection to a
-tunnel stream.
+  tunnel stream.
 - Stream events become tunnel frames: `open`, `data`, `ack`, `close`, `reset`,
-and related control messages.
+  and related control messages.
 - Frames are batched into binary chunk files with a session ID, direction,
-sequence number, stream ID, ACK number, and payload bytes.
+  sequence number, stream ID, ACK number, and payload bytes.
 - Bale Saved Messages is the transport layer. The client uploads encrypted
-client-to-relay chunk files; the relay downloads them, forwards the traffic,
-and uploads encrypted relay-to-client response files.
+  client-to-relay chunk files; the relay downloads them, forwards the traffic,
+  and uploads encrypted relay-to-client response files.
 - Chunk filenames include the tunnel session, direction, and sequence number so
-each side can filter only the files meant for that tunnel.
+  each side can filter only the files meant for that tunnel.
 - Received chunks are tracked in local state to avoid duplicate processing.
-Non-ACK chunks stay in a retry cache until the other side acknowledges them.
+  Non-ACK chunks stay in a retry cache until the other side acknowledges them.
 - Multiple Bale accounts can be enabled. Uploads are load-balanced, and accounts
-that hit rate limits or transient HTTP errors are skipped until their backoff
-period ends.
+  that hit rate limits or transient HTTP errors are skipped until their backoff
+  period ends.
 
 Security and transport:
 
 - X25519 key pairs are generated locally and exchanged between client and relay.
 - HKDF-SHA256 derives separate per-session send and receive keys from the shared
-secret, session ID, and traffic direction.
+  secret, session ID, and traffic direction.
 - AES-GCM with 256-bit keys encrypts and authenticates every chunk file.
 - Chunk metadata is authenticated as AES-GCM associated data, including session,
-direction, sequence number, and compression flag.
+  direction, sequence number, and compression flag.
 - LZ4 frame compression runs before encryption and is used only when it makes the
-chunk smaller.
+  chunk smaller.
 - Wrong-session, wrong-direction, corrupted, or undecryptable tunnel files are
-ignored instead of being forwarded.
+  ignored instead of being forwarded.
 
 Profiles store tunnel config, Bale session state, and local runtime state. The
 default CLI profile is `.btun`; this README uses `.btun-client` and
@@ -177,12 +184,10 @@ Internet
 
 Important defaults:
 
-
 | Setting        | Default          |
 | -------------- | ---------------- |
 | SOCKS endpoint | `127.0.0.1:1080` |
 | Transport mode | `bulk`           |
-
 
 Transport modes:
 
@@ -201,7 +206,7 @@ Requirements:
 
 - Flutter/Dart compatible with SDK `^3.11.0`.
 - For Linux desktop builds: `clang`, `cmake`, `ninja-build`, `pkg-config`,
-`libgtk-3-dev`, and `liblzma-dev`.
+  `libgtk-3-dev`, and `liblzma-dev`.
 
 Build from source:
 
