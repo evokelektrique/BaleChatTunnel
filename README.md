@@ -1,14 +1,16 @@
 <p align="center">
-  <img src="resources/banner.png" alt="Bale Chat Tunnel banner" width="100%">
-</p>
-
-<p align="center">
   <img src="resources/logo/source/app_icon_512.png" alt="Bale Chat Tunnel logo" width="112">
 </p>
 
 <h1 align="center">Bale Chat Tunnel</h1>
 
-A tunnel that moves traffic through Bale Messenger by uploading and downloading encrypted files.
+<p align="center">
+  A tunnel that moves traffic through Bale Messenger by uploading and downloading encrypted files.
+</p>
+
+<p align="center">
+  <img src="resources/banner.png" alt="Bale Chat Tunnel banner" width="100%">
+</p>
 
 Bale Chat Tunnel uses Bale Saved Messages as the transport layer. The client
 packs traffic into encrypted tunnel files, uploads them to Bale, and the relay
