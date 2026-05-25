@@ -57,6 +57,14 @@ class StateDb {
     _flush();
   }
 
+  int nextExpectedReceivedChunk() {
+    var sequenceNumber = 1;
+    while (_state.receivedChunks.containsKey(sequenceNumber.toString())) {
+      sequenceNumber += 1;
+    }
+    return sequenceNumber;
+  }
+
   void upsertStream({
     required int streamId,
     required String host,

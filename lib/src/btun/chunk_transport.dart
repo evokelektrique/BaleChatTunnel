@@ -34,7 +34,11 @@ class ChunkTransport {
     this.controlFlushDelay = const Duration(milliseconds: 100),
     this.ackDelay = const Duration(milliseconds: 10000),
     this.retryTick = const Duration(seconds: 10),
-  });
+    this.maxReorderChunks = 128,
+    this.maxReorderBytes = 256 * 1024 * 1024,
+  }) {
+    _nextReceiveSequence = stateDb.nextExpectedReceivedChunk();
+  }
 
   final TunnelTransport transport;
   final BtunCrypto crypto;
@@ -61,6 +65,8 @@ class ChunkTransport {
   final Duration controlFlushDelay;
   final Duration ackDelay;
   final Duration retryTick;
+  final int maxReorderChunks;
+  final int maxReorderBytes;
 
   final StreamController<TunnelFrame> _frames =
       StreamController<TunnelFrame>.broadcast();
@@ -75,10 +81,15 @@ class ChunkTransport {
   var _retryCacheBytes = 0;
   var _queuedBytes = 0;
   final _pendingAcks = <int>{};
-  var _nextSequence = DateTime.now().millisecondsSinceEpoch;
+  final _reorderBuffer = <int, _BufferedChunk>{};
+  final _deliveredReceivedSequences = <int>{};
+  var _reorderBufferBytes = 0;
+  var _nextSequence = 1;
+  var _nextReceiveSequence = 1;
   var _closed = false;
   var _retryInProgress = false;
   DateTime? _retryNotBefore;
+  DateTime? _receiveGapSince;
 
   Stream<TunnelFrame> get frames => _frames.stream;
 
@@ -225,27 +236,138 @@ class ChunkTransport {
       if (chunk.sessionId != sessionId || chunk.direction != receiveDirection) {
         return;
       }
-      final duplicate = stateDb.hasReceivedChunk(chunk.sequenceNumber);
-      if (!duplicate) {
-        stateDb.markReceivedChunk(chunk.sequenceNumber);
-      }
+      final persistedDuplicate = stateDb.hasReceivedChunk(chunk.sequenceNumber);
+      final deliveredDuplicate =
+          persistedDuplicate ||
+          _deliveredReceivedSequences.contains(chunk.sequenceNumber);
+      final bufferedDuplicate = _reorderBuffer.containsKey(
+        chunk.sequenceNumber,
+      );
       // Duplicate chunks can arrive from retries or repeated Bale history
       // polling. They still carry ACKs, but data frames are delivered once.
-      var shouldAck = false;
+      var hasDataOrControl = false;
       for (final frame in chunk.frames) {
         if (frame.type == FrameType.ack) {
           _markRetryAcked(frame.ackNumber);
         } else {
-          shouldAck = true;
-          if (!duplicate) _frames.add(frame);
+          hasDataOrControl = true;
         }
       }
-      if (shouldAck) _scheduleAck(chunk.sequenceNumber);
+      if (hasDataOrControl) _scheduleAck(chunk.sequenceNumber);
+      logger.info(
+        'received chunk seq=${chunk.sequenceNumber} '
+        'expected=$_nextReceiveSequence buffered=${_reorderBuffer.length} '
+        'duplicate=${deliveredDuplicate || bufferedDuplicate}',
+      );
+      if (!hasDataOrControl || deliveredDuplicate || bufferedDuplicate) return;
+      _bufferOrDeliver(chunk);
     } on Object catch (error) {
       logger.warn(
         'ignored corrupted or invalid tunnel file ${incoming.fileName}: $error',
       );
     }
+  }
+
+  void _bufferOrDeliver(PlainChunk chunk) {
+    if (_isLegacyInitialChunk(chunk.sequenceNumber)) {
+      logger.info(
+        'accepting legacy initial receive sequence ${chunk.sequenceNumber}',
+      );
+      _nextReceiveSequence = chunk.sequenceNumber;
+    }
+    if (chunk.sequenceNumber < _nextReceiveSequence) {
+      logger.info(
+        'skipping already delivered chunk seq=${chunk.sequenceNumber} '
+        'expected=$_nextReceiveSequence',
+      );
+      return;
+    }
+    if (chunk.sequenceNumber == _nextReceiveSequence) {
+      _deliverChunk(chunk);
+      _drainReorderBuffer();
+      return;
+    }
+    final encodedBytes = _estimateChunkBytes(chunk);
+    _reorderBuffer[chunk.sequenceNumber] = _BufferedChunk(
+      chunk: chunk,
+      estimatedBytes: encodedBytes,
+      receivedAt: DateTime.now(),
+    );
+    _reorderBufferBytes += encodedBytes;
+    _receiveGapSince ??= DateTime.now();
+    logger.warn(
+      'holding out-of-order chunk seq=${chunk.sequenceNumber} '
+      'expected=$_nextReceiveSequence buffered=${_reorderBuffer.length} '
+      'bytes=$_reorderBufferBytes gap_age_ms=${_gapAgeMs()}',
+    );
+    _enforceReorderLimit();
+  }
+
+  bool _isLegacyInitialChunk(int sequenceNumber) {
+    // Older builds started chunk numbers from the current epoch millisecond.
+    // New sessions start at 1 so missing early chunks can be detected.
+    return _nextReceiveSequence == 1 &&
+        _reorderBuffer.isEmpty &&
+        _deliveredReceivedSequences.isEmpty &&
+        sequenceNumber > 1000000000000;
+  }
+
+  void _drainReorderBuffer() {
+    var recoveredGap = false;
+    while (true) {
+      final buffered = _reorderBuffer.remove(_nextReceiveSequence);
+      if (buffered == null) break;
+      _reorderBufferBytes -= buffered.estimatedBytes;
+      recoveredGap = true;
+      _deliverChunk(buffered.chunk);
+    }
+    if (recoveredGap) {
+      logger.info(
+        'recovered receive gap; next_expected=$_nextReceiveSequence '
+        'buffered=${_reorderBuffer.length}',
+      );
+    }
+    if (_reorderBuffer.isEmpty) _receiveGapSince = null;
+  }
+
+  void _deliverChunk(PlainChunk chunk) {
+    for (final frame in chunk.frames) {
+      if (frame.type != FrameType.ack) _frames.add(frame);
+    }
+    _deliveredReceivedSequences.add(chunk.sequenceNumber);
+    stateDb.markReceivedChunk(chunk.sequenceNumber);
+    _nextReceiveSequence = chunk.sequenceNumber + 1;
+  }
+
+  void _enforceReorderLimit() {
+    final chunkLimit = maxReorderChunks <= 0 ? 1 : maxReorderChunks;
+    final byteLimit = maxReorderBytes <= 0 ? chunkSize : maxReorderBytes;
+    if (_reorderBuffer.length <= chunkLimit &&
+        _reorderBufferBytes <= byteLimit) {
+      return;
+    }
+    logger.warn(
+      'receive reorder buffer overflow; closing tunnel '
+      'expected=$_nextReceiveSequence buffered=${_reorderBuffer.length} '
+      'bytes=$_reorderBufferBytes limits=$chunkLimit/$byteLimit',
+    );
+    _reorderBuffer.clear();
+    _reorderBufferBytes = 0;
+    unawaited(close());
+  }
+
+  int _estimateChunkBytes(PlainChunk chunk) {
+    var bytes = 256;
+    for (final frame in chunk.frames) {
+      bytes += _estimateFrameBytes(frame);
+    }
+    return bytes;
+  }
+
+  int _gapAgeMs() {
+    final since = _receiveGapSince;
+    if (since == null) return 0;
+    return DateTime.now().difference(since).inMilliseconds;
   }
 
   void _scheduleAck(int sequenceNumber) {
@@ -549,4 +671,16 @@ class _RetryChunk {
   void markSent() {
     lastSentAt = DateTime.now().millisecondsSinceEpoch;
   }
+}
+
+class _BufferedChunk {
+  const _BufferedChunk({
+    required this.chunk,
+    required this.estimatedBytes,
+    required this.receivedAt,
+  });
+
+  final PlainChunk chunk;
+  final int estimatedBytes;
+  final DateTime receivedAt;
 }
