@@ -12,6 +12,7 @@ import 'saved_messages_transport.dart';
 import 'socks5_server.dart';
 import 'state_db.dart';
 import 'tunnel_client.dart';
+import 'tunnel_transport.dart';
 
 class BtunClientRuntime {
   BtunClientRuntime({
@@ -138,6 +139,7 @@ class BtunClientRuntime {
           logger: logger,
           maxConcurrentUploads: nextConfig.maxInFlight,
           accountUserId: account.userId,
+          onTraffic: transport.onTraffic,
         );
         await transport.addAccount(account.userId, accountTransport);
         accountClients.add(client);
@@ -180,6 +182,7 @@ Future<BtunClientRuntime> createBtunClientRuntime({
   required BtunConfig config,
   required Logger logger,
   int? socksPort,
+  TunnelTrafficCallback? onTraffic,
 }) async {
   if (config.peerPublicKey == null || config.peerPublicKey!.isEmpty) {
     throw Exception(
@@ -210,9 +213,11 @@ Future<BtunClientRuntime> createBtunClientRuntime({
           logger: logger,
           maxConcurrentUploads: config.maxInFlight,
           accountUserId: client.session?.userId,
+          onTraffic: onTraffic,
         ),
     ],
     logger: logger,
+    onTraffic: onTraffic,
   );
   final chunkTransport = ChunkTransport(
     transport: transport,
@@ -230,6 +235,7 @@ Future<BtunClientRuntime> createBtunClientRuntime({
     maxRetryBytes: config.maxRetryBytes,
     flushDelay: config.flushDelay,
     bulkFlushDelay: config.bulkFlushDelay,
+    interactiveChunkSize: config.interactiveChunkSize,
     interactiveFlushDelay: config.flushDelay,
     controlFlushDelay: const Duration(milliseconds: 100),
     ackDelay: config.maxAckFlushInterval,

@@ -14,6 +14,8 @@ void main() {
     expect(find.text('Connect'), findsNothing);
     expect(find.text('Disconnect'), findsNothing);
     expect(find.byIcon(Icons.power_settings_new_outlined), findsOneWidget);
+    expect(find.text('Downloaded 0 B'), findsOneWidget);
+    expect(find.text('Uploaded 0 B'), findsOneWidget);
     expect(find.text('Config'), findsOneWidget);
     expect(find.text('Bale'), findsOneWidget);
     expect(find.text('Relay key'), findsOneWidget);
@@ -65,6 +67,7 @@ void main() {
     expect(find.text('Add account'), findsOneWidget);
     expect(find.text('Relay public key'), findsOneWidget);
     expect(find.text('Client public key'), findsOneWidget);
+    expect(find.text('Copy'), findsOneWidget);
     expect(find.text('Key Exchange'), findsNothing);
 
     await tester.drag(find.byType(ListView).last, const Offset(0, -700));
@@ -85,5 +88,17 @@ void main() {
 
     expect(controller.error, isNull);
     expect(find.text('Something failed'), findsNothing);
+  });
+
+  testWidgets('home formats session traffic totals', (tester) async {
+    final controller = BtunAppController(persistPrefs: false)
+      ..status = RuntimeStatus.idle
+      ..sessionDownloadedBytes = 12 * 1024 * 1024 + 410 * 1024
+      ..sessionUploadedBytes = 8 * 1024 + 120;
+
+    await tester.pumpWidget(BtunApp(controller: controller));
+
+    expect(find.text('Downloaded 12.4 MB'), findsOneWidget);
+    expect(find.text('Uploaded 8.1 KB'), findsOneWidget);
   });
 }

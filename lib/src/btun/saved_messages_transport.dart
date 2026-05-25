@@ -20,6 +20,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     required this.logger,
     this.maxConcurrentUploads = 1,
     this.accountUserId,
+    this.onTraffic,
   });
 
   final BaleClient client;
@@ -34,6 +35,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   final Logger logger;
   int maxConcurrentUploads;
   final int? accountUserId;
+  final TunnelTrafficCallback? onTraffic;
 
   final StreamController<IncomingTunnelFile> _incoming =
       StreamController<IncomingTunnelFile>.broadcast();
@@ -182,6 +184,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     logger.info(
       'sent upload seq=${file.sequenceNumber} bytes=${file.bytes.length}',
     );
+    onTraffic?.call(TunnelTrafficDelta(uploadedBytes: file.bytes.length));
     _recordUploadSuccess();
     _logUploadWindowStats();
   }
@@ -297,6 +300,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
       );
       _downloadBackoffUntil.remove(messageId);
       stateDb.markProcessedMessage(messageId);
+      onTraffic?.call(TunnelTrafficDelta(downloadedBytes: bytes.length));
       _incoming.add(
         IncomingTunnelFile(
           messageId: messageId,
@@ -535,6 +539,7 @@ class LoadBalancedSavedMessagesTransport implements TunnelTransport {
   LoadBalancedSavedMessagesTransport({
     required List<TunnelTransport> transports,
     required this.logger,
+    this.onTraffic,
   }) {
     var syntheticId = -1;
     for (final transport in transports) {
@@ -547,6 +552,7 @@ class LoadBalancedSavedMessagesTransport implements TunnelTransport {
 
   final _transports = <int, TunnelTransport>{};
   final Logger logger;
+  final TunnelTrafficCallback? onTraffic;
   final StreamController<IncomingTunnelFile> _incoming =
       StreamController<IncomingTunnelFile>.broadcast();
   final _subscriptions = <int, StreamSubscription<IncomingTunnelFile>>{};

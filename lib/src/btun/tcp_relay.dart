@@ -59,7 +59,7 @@ class TcpRelay {
       final socket = await Socket.connect(
         host,
         port,
-        timeout: const Duration(seconds: 15),
+        timeout: const Duration(seconds: 30),
       );
       if (stream.reset) {
         socket.destroy();

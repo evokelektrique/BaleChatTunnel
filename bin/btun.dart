@@ -125,6 +125,7 @@ class BtunCli {
       configPathFromArgs: _value('config'),
       sessionPathFromArgs: _value('session'),
       roleFromArgs: _roleValue('role'),
+      transferModeFromArgs: _transferModeValue('transfer-mode'),
       loginRunner: _loginForSetup,
     );
     await wizard.run();
@@ -154,6 +155,8 @@ class BtunCli {
     var config = (existing ?? BtunConfig.defaults(profileDir: profile))
         .copyWith(
           sessionId: sessionId,
+          transferMode:
+              _transferModeValue('transfer-mode') ?? existing?.transferMode,
           localPublicKey: localKeys.publicKey,
           localPrivateKey: localKeys.privateKey,
           peerPublicKey: peerPublicKey,
@@ -179,36 +182,35 @@ class BtunCli {
       '${_peerStatusLabel(config.role)}: ${config.peerPublicKey ?? '<not set>'}',
     );
     stdout.writeln('socks: ${config.socksHost}:${config.socksPort}');
+    stdout.writeln('transfer_mode: ${config.transferMode.name}');
     stdout.writeln('adaptive: true');
-    stdout.writeln('min_chunk_size: ${config.adaptive.minChunkSize}');
-    stdout.writeln('max_chunk_size: ${config.adaptive.maxChunkSize}');
+    stdout.writeln('min_chunk_size: ${config.chunkSize}');
+    stdout.writeln('max_chunk_size: ${config.bulkChunkSize}');
     stdout.writeln(
-      'min_poll_interval_ms: ${config.adaptive.minPollInterval.inMilliseconds}',
+      'min_poll_interval_ms: ${config.pollInterval.inMilliseconds}',
     );
     stdout.writeln(
-      'max_poll_interval_ms: ${config.adaptive.maxPollInterval.inMilliseconds}',
+      'max_poll_interval_ms: ${config.maxPollInterval.inMilliseconds}',
     );
     stdout.writeln('retry_timeout_ms: ${config.retryTimeout.inMilliseconds}');
     stdout.writeln(
-      'min_upload_rate_per_minute: ${config.adaptive.minUploadRatePerMinute}',
+      'min_upload_rate_per_minute: ${config.effectiveAdaptive.minUploadRatePerMinute}',
     );
     stdout.writeln(
-      'max_upload_rate_per_minute: ${config.adaptive.maxUploadRatePerMinute}',
+      'max_upload_rate_per_minute: ${config.uploadRateLimitPerMinute}',
     );
     stdout.writeln(
-      'min_ack_flush_interval_ms: ${config.adaptive.minAckFlushInterval.inMilliseconds}',
+      'min_ack_flush_interval_ms: ${config.ackFlushInterval.inMilliseconds}',
     );
     stdout.writeln(
-      'max_ack_flush_interval_ms: ${config.adaptive.maxAckFlushInterval.inMilliseconds}',
+      'max_ack_flush_interval_ms: ${config.maxAckFlushInterval.inMilliseconds}',
     );
+    stdout.writeln('min_flush_delay_ms: ${config.flushDelay.inMilliseconds}');
     stdout.writeln(
-      'min_flush_delay_ms: ${config.adaptive.minFlushDelay.inMilliseconds}',
+      'max_flush_delay_ms: ${config.bulkFlushDelay.inMilliseconds}',
     );
-    stdout.writeln(
-      'max_flush_delay_ms: ${config.adaptive.maxFlushDelay.inMilliseconds}',
-    );
-    stdout.writeln('max_in_flight: ${config.adaptive.maxInFlight}');
-    stdout.writeln('max_streams: ${config.adaptive.maxStreams}');
+    stdout.writeln('max_in_flight: ${config.maxInFlight}');
+    stdout.writeln('max_streams: ${config.maxStreams}');
     stdout.writeln('max_retry_chunks: ${config.maxRetryChunks}');
     stdout.writeln('max_retry_bytes: ${config.maxRetryBytes}');
     stdout.writeln('accounts: ${config.accounts.length}');
@@ -501,6 +503,10 @@ class BtunCli {
     if (role != null) config = config.copyWith(role: role);
     final sessionId = _value('session-id');
     if (sessionId != null) config = config.copyWith(sessionId: sessionId);
+    final transferMode = _transferModeValue('transfer-mode');
+    if (transferMode != null) {
+      config = config.copyWith(transferMode: transferMode);
+    }
     return config;
   }
 
@@ -561,6 +567,7 @@ class BtunCli {
       maxRetryBytes: config.maxRetryBytes,
       flushDelay: config.flushDelay,
       bulkFlushDelay: config.bulkFlushDelay,
+      interactiveChunkSize: config.interactiveChunkSize,
       interactiveFlushDelay: config.flushDelay,
       controlFlushDelay: const Duration(milliseconds: 100),
       ackDelay: config.maxAckFlushInterval,
@@ -637,6 +644,17 @@ class BtunCli {
     };
   }
 
+  BtunTransferMode? _transferModeValue(String name) {
+    final value = _value(name);
+    if (value == null) return null;
+    return switch (value.trim().toLowerCase().replaceAll('-', '_')) {
+      'balanced' => BtunTransferMode.balanced,
+      'bulk' => BtunTransferMode.bulk,
+      'low_latency' => BtunTransferMode.lowLatency,
+      _ => throw Exception('invalid transfer mode: $value'),
+    };
+  }
+
   String _localKeyLabel(BtunRole role) => switch (role) {
     BtunRole.client => 'client_public_key',
     BtunRole.relay => 'relay_public_key',
@@ -688,6 +706,7 @@ Options:
   --profile <dir>          Default: .btun
   --config <path>          Default: <profile>/config.json
   --role <client|relay>    Setup role override
+  --transfer-mode <mode>   balanced, bulk, or low-latency
   --session-id <id>        Override session id
   --peer-public-key <key>  Public key from the other side
   --client-public-key <key> Alias for peer key when this machine is relay

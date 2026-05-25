@@ -26,6 +26,15 @@ class OutgoingTunnelFile {
   final Direction direction;
 }
 
+class TunnelTrafficDelta {
+  const TunnelTrafficDelta({this.uploadedBytes = 0, this.downloadedBytes = 0});
+
+  final int uploadedBytes;
+  final int downloadedBytes;
+}
+
+typedef TunnelTrafficCallback = void Function(TunnelTrafficDelta delta);
+
 abstract interface class TunnelTransport {
   Future<void> start();
   Stream<IncomingTunnelFile> incomingFiles();

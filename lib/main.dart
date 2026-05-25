@@ -10,7 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 const appTitle = 'Bale Chat Tunnel';
-const appVersionLabel = '0.2.1';
+const appVersionLabel = '0.2.7';
 const appRepositoryUrl = 'https://github.com/evokelektrique/BaleChatTunnel';
 const settingsControlShape = RoundedRectangleBorder(
   borderRadius: BorderRadius.all(Radius.circular(8)),
@@ -178,6 +178,8 @@ class BtunAppController extends ChangeNotifier {
   String? error;
   final logs = <UiLogRecord>[];
   BtunClientRuntime? _runtime;
+  int sessionDownloadedBytes = 0;
+  int sessionUploadedBytes = 0;
 
   bool get isRunning => status == RuntimeStatus.running;
   bool get isBusy =>
@@ -264,6 +266,7 @@ class BtunAppController extends ChangeNotifier {
     String? peerPublicKey,
     String? socksHost,
     int? socksPort,
+    BtunTransferMode? transferMode,
     int? maxInFlight,
     int? chunkSize,
     int? pollMs,
@@ -287,6 +290,7 @@ class BtunAppController extends ChangeNotifier {
             ? current.socksHost
             : socksHost!.trim(),
         socksPort: socksPort,
+        transferMode: transferMode,
         maxInFlight: maxInFlight,
         chunkSize: chunkSize,
         pollInterval: pollMs == null ? null : Duration(milliseconds: pollMs),
@@ -307,11 +311,14 @@ class BtunAppController extends ChangeNotifier {
         throw Exception('Log in before starting SOCKS.');
       }
       status = RuntimeStatus.loading;
+      sessionDownloadedBytes = 0;
+      sessionUploadedBytes = 0;
       notifyListeners();
       final runtime =
           await createBtunClientRuntime(
             config: current.copyWith(role: BtunRole.client),
             logger: UiLogger(_log),
+            onTraffic: _recordTraffic,
           ).timeout(
             const Duration(seconds: 25),
             onTimeout: () {
@@ -509,6 +516,7 @@ class BtunAppController extends ChangeNotifier {
     final runtime = await createBtunClientRuntime(
       config: next.copyWith(role: BtunRole.client),
       logger: UiLogger(_log),
+      onTraffic: _recordTraffic,
     );
     await current.close();
     _runtime = null;
@@ -617,6 +625,12 @@ class BtunAppController extends ChangeNotifier {
     if (logs.length > 500) logs.removeLast();
     notifyListeners();
   }
+
+  void _recordTraffic(TunnelTrafficDelta delta) {
+    sessionUploadedBytes += delta.uploadedBytes;
+    sessionDownloadedBytes += delta.downloadedBytes;
+    notifyListeners();
+  }
 }
 
 enum LoginResult { complete, passwordNeeded, signUpNeeded }
@@ -694,7 +708,12 @@ class BtunHome extends StatelessWidget {
                     ),
                   ],
                 ),
-                const VerticalDivider(width: 1),
+                VerticalDivider(
+                  width: 1,
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.outlineVariant.withValues(alpha: 0.55),
+                ),
                 Expanded(child: content),
               ],
             ),
@@ -787,8 +806,8 @@ class ConnectionControl extends StatelessWidget {
                   shape: BoxShape.circle,
                   color: color.withValues(alpha: running ? 0.14 : 0.06),
                   border: Border.all(
-                    color: color.withValues(alpha: running ? 0.80 : 0.48),
-                    width: running ? 3 : 2,
+                    color: color.withValues(alpha: running ? 0.64 : 0.34),
+                    width: running ? 2 : 1.5,
                   ),
                 ),
                 child: Stack(
@@ -829,9 +848,55 @@ class ConnectionControl extends StatelessWidget {
             context,
           ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
         ),
+        const SizedBox(height: 10),
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 14,
+          runSpacing: 4,
+          children: [
+            _TrafficLabel(
+              label: 'Downloaded',
+              bytes: controller.sessionDownloadedBytes,
+            ),
+            _TrafficLabel(
+              label: 'Uploaded',
+              bytes: controller.sessionUploadedBytes,
+            ),
+          ],
+        ),
       ],
     );
   }
+}
+
+class _TrafficLabel extends StatelessWidget {
+  const _TrafficLabel({required this.label, required this.bytes});
+
+  final String label;
+  final int bytes;
+
+  @override
+  Widget build(BuildContext context) {
+    final style = Theme.of(context).textTheme.labelMedium?.copyWith(
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    );
+    return Text('$label ${formatTrafficBytes(bytes)}', style: style);
+  }
+}
+
+String formatTrafficBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  const units = ['KB', 'MB', 'GB'];
+  var value = bytes / 1024;
+  var unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  final fixed = value == value.roundToDouble()
+      ? value.toStringAsFixed(0)
+      : value.toStringAsFixed(1);
+  return '$fixed ${units[unitIndex]}';
 }
 
 class SetupStatusList extends StatelessWidget {
@@ -1307,12 +1372,11 @@ class _SettingsTabState extends State<SettingsTab> {
                     const SizedBox(width: 10),
                     SizedBox(
                       height: 34,
-                      child: IconButton.outlined(
-                        tooltip: 'Copy client public key',
-                        style: IconButton.styleFrom(
-                          fixedSize: const Size(34, 34),
-                          minimumSize: const Size(34, 34),
-                          padding: EdgeInsets.zero,
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size(70, 34),
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          textStyle: Theme.of(context).textTheme.labelMedium,
                           shape: settingsControlShape,
                         ),
                         onPressed: config?.localPublicKey.isNotEmpty ?? false
@@ -1321,6 +1385,7 @@ class _SettingsTabState extends State<SettingsTab> {
                               )
                             : null,
                         icon: const Icon(Icons.copy, size: 18),
+                        label: const Text('Copy'),
                       ),
                     ),
                   ],
@@ -1376,6 +1441,30 @@ class _SettingsTabState extends State<SettingsTab> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 AdaptiveSummary(config: config),
+                const SizedBox(height: 10),
+                ResponsiveOptionGroup<BtunTransferMode>(
+                  selected: config?.transferMode ?? BtunTransferMode.balanced,
+                  options: const [
+                    OptionItem(
+                      value: BtunTransferMode.balanced,
+                      icon: Icons.tune,
+                      label: 'Balanced',
+                    ),
+                    OptionItem(
+                      value: BtunTransferMode.bulk,
+                      icon: Icons.download,
+                      label: 'Bulk',
+                    ),
+                    OptionItem(
+                      value: BtunTransferMode.lowLatency,
+                      icon: Icons.bolt,
+                      label: 'Low latency',
+                    ),
+                  ],
+                  onChanged: (mode) {
+                    unawaited(widget.controller.saveConfig(transferMode: mode));
+                  },
+                ),
                 const SizedBox(height: 4),
                 Theme(
                   data: Theme.of(
@@ -1447,35 +1536,32 @@ class _SettingsTabState extends State<SettingsTab> {
             ),
           );
           const aboutCard = AboutCard();
-          return Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 1180),
-              child: Column(
-                children: [
-                  Expanded(
-                    child: ListView(
-                      padding: EdgeInsets.symmetric(
-                        horizontal: compact ? 14 : 24,
-                        vertical: compact ? 14 : 20,
-                      ),
-                      children: [
-                        profileCard,
-                        const SizedBox(height: 12),
-                        accountCard,
-                        const SizedBox(height: 12),
-                        tunnelCard,
-                        const SizedBox(height: 12),
-                        performanceCard,
-                        const SizedBox(height: 12),
-                        appearanceCard,
-                        const SizedBox(height: 12),
-                        aboutCard,
-                      ],
-                    ),
+          return Column(
+            children: [
+              Expanded(
+                child: ListView(
+                  padding: EdgeInsets.fromLTRB(
+                    compact ? 14 : 24,
+                    compact ? 14 : 20,
+                    compact ? 14 : 24,
+                    compact ? 14 : 24,
                   ),
-                ],
+                  children: [
+                    profileCard,
+                    const SizedBox(height: 10),
+                    accountCard,
+                    const SizedBox(height: 10),
+                    tunnelCard,
+                    const SizedBox(height: 10),
+                    performanceCard,
+                    const SizedBox(height: 10),
+                    appearanceCard,
+                    const SizedBox(height: 10),
+                    aboutCard,
+                  ],
+                ),
               ),
-            ),
+            ],
           );
         },
       ),
@@ -1536,7 +1622,7 @@ class SettingsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1546,7 +1632,7 @@ class SettingsCard extends StatelessWidget {
               trailing: trailing,
               dense: true,
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 10),
             child,
           ],
         ),
@@ -1689,17 +1775,29 @@ class AdaptiveSummary extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
-    const title = 'Adaptive';
-    const description =
-        'Automatically runs fast and backs off when Bale or retry pressure rises.';
     final activeConfig = config;
+    final mode = activeConfig?.transferMode ?? BtunTransferMode.balanced;
+    final title = switch (mode) {
+      BtunTransferMode.balanced => 'Balanced',
+      BtunTransferMode.bulk => 'Bulk',
+      BtunTransferMode.lowLatency => 'Low latency',
+    };
+    final description = switch (mode) {
+      BtunTransferMode.balanced =>
+        'Automatically runs fast and backs off when Bale or retry pressure rises.',
+      BtunTransferMode.bulk =>
+        'Batches large transfers into fewer Bale files with a slower cadence.',
+      BtunTransferMode.lowLatency =>
+        'Prefers faster flushes for interactive traffic.',
+    };
     final details = activeConfig == null
         ? 'Initialize config to save adaptive transport bounds.'
-        : '${_formatBytes(activeConfig.adaptive.minChunkSize)}-'
-              '${_formatBytes(activeConfig.adaptive.maxChunkSize)} chunks, '
-              '${activeConfig.adaptive.minUploadRatePerMinute}-'
-              '${activeConfig.adaptive.maxUploadRatePerMinute}/min, '
-              '${activeConfig.adaptive.maxStreams} streams';
+        : '${_formatBytes(activeConfig.chunkSize)}-'
+              '${_formatBytes(activeConfig.bulkChunkSize)} chunks, '
+              '${activeConfig.effectiveAdaptive.minUploadRatePerMinute}-'
+              '${activeConfig.uploadRateLimitPerMinute}/min, '
+              '${activeConfig.flushDelay.inMilliseconds}ms cadence, '
+              '${activeConfig.maxStreams} streams';
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),

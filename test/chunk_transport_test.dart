@@ -498,6 +498,121 @@ void main() {
     await chunkTransport.close();
   });
 
+  test('bulk transfer mode waits for larger chunk target', () async {
+    final temp = await Directory.systemTemp.createTemp('btun_bulk_mode_test_');
+    addTearDown(() => temp.delete(recursive: true));
+    final clientKeys = await BtunCrypto.generateKeyPair();
+    final relayKeys = await BtunCrypto.generateKeyPair();
+    final config = BtunConfig.defaults(profileDir: temp.path).copyWith(
+      transferMode: BtunTransferMode.bulk,
+      sessionId: 'testsession',
+      localPublicKey: clientKeys.publicKey,
+      localPrivateKey: clientKeys.privateKey,
+      peerPublicKey: relayKeys.publicKey,
+    );
+    final transport = _FakeTransport();
+    final chunkTransport = ChunkTransport(
+      transport: transport,
+      crypto: await BtunCrypto.fromConfig(
+        config,
+        send: Direction.c2r,
+        receive: Direction.r2c,
+      ),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      sessionId: config.sessionId,
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      chunkSize: config.chunkSize,
+      bulkChunkSize: config.bulkChunkSize,
+      retryTimeout: config.retryTimeout,
+      maxInFlight: config.maxInFlight,
+      logger: const Logger(),
+      flushDelay: const Duration(minutes: 1),
+      bulkFlushDelay: const Duration(minutes: 1),
+      interactiveChunkSize: config.interactiveChunkSize,
+      interactiveFlushDelay: const Duration(minutes: 1),
+      ackDelay: const Duration(minutes: 1),
+    );
+    await chunkTransport.start();
+
+    await chunkTransport.sendFrame(
+      TunnelFrame.data(
+        sessionId: config.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 1,
+        payload: List<int>.filled(2 * 1024 * 1024, 1),
+      ),
+    );
+    expect(transport.sent, isEmpty);
+
+    await chunkTransport.sendFrame(
+      TunnelFrame.data(
+        sessionId: config.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 2,
+        payload: List<int>.filled(2 * 1024 * 1024, 2),
+      ),
+    );
+
+    expect(transport.sent, hasLength(1));
+    await chunkTransport.close();
+  });
+
+  test('bulk-style cadence flushes queued data on timer', () async {
+    final temp = await Directory.systemTemp.createTemp('btun_bulk_timer_test_');
+    addTearDown(() => temp.delete(recursive: true));
+    final clientKeys = await BtunCrypto.generateKeyPair();
+    final relayKeys = await BtunCrypto.generateKeyPair();
+    final config = BtunConfig.defaults(profileDir: temp.path).copyWith(
+      transferMode: BtunTransferMode.bulk,
+      sessionId: 'testsession',
+      localPublicKey: clientKeys.publicKey,
+      localPrivateKey: clientKeys.privateKey,
+      peerPublicKey: relayKeys.publicKey,
+    );
+    final transport = _FakeTransport();
+    final chunkTransport = ChunkTransport(
+      transport: transport,
+      crypto: await BtunCrypto.fromConfig(
+        config,
+        send: Direction.c2r,
+        receive: Direction.r2c,
+      ),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      sessionId: config.sessionId,
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      chunkSize: config.chunkSize,
+      bulkChunkSize: config.bulkChunkSize,
+      retryTimeout: config.retryTimeout,
+      maxInFlight: config.maxInFlight,
+      logger: const Logger(),
+      flushDelay: const Duration(milliseconds: 30),
+      bulkFlushDelay: const Duration(milliseconds: 30),
+      interactiveChunkSize: config.interactiveChunkSize,
+      interactiveFlushDelay: const Duration(milliseconds: 30),
+      ackDelay: const Duration(minutes: 1),
+    );
+    await chunkTransport.start();
+
+    await chunkTransport.sendFrame(
+      TunnelFrame.data(
+        sessionId: config.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 1,
+        payload: List<int>.filled(1024 * 1024, 1),
+      ),
+    );
+
+    expect(transport.sent, isEmpty);
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    expect(transport.sent, hasLength(1));
+    await chunkTransport.close();
+  });
+
   test('chunk transport resets idle stream to interactive mode', () async {
     final temp = await Directory.systemTemp.createTemp('btun_idle_test_');
     addTearDown(() => temp.delete(recursive: true));
@@ -1054,6 +1169,96 @@ void main() {
     },
   );
 
+  test('saved messages reports uploaded tunnel file bytes', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'btun_upload_traffic_test_',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final deltas = <TunnelTrafficDelta>[];
+    final transport = BaleSavedMessagesTransport(
+      client: _FakeBaleClient(),
+      sessionId: 'testsession',
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      pollInterval: const Duration(days: 1),
+      maxPollInterval: const Duration(days: 2),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      uploadMinInterval: Duration.zero,
+      uploadRateLimitPerMinute: 50,
+      logger: const Logger(),
+      onTraffic: deltas.add,
+    );
+
+    await transport.sendFile(
+      const OutgoingTunnelFile(
+        fileName: 'btun_testsession_c2r_1.btun',
+        bytes: [1, 2, 3, 4],
+        sequenceNumber: 1,
+        direction: Direction.c2r,
+      ),
+    );
+
+    expect(deltas.map((delta) => delta.uploadedBytes), [4]);
+    expect(deltas.single.downloadedBytes, isZero);
+    await transport.close();
+  });
+
+  test('saved messages reports downloaded tunnel file bytes', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'btun_download_traffic_test_',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final client = _FakeBaleClient(downloadBytes: [1, 2, 3, 4, 5]);
+    final deltas = <TunnelTrafficDelta>[];
+    final transport = BaleSavedMessagesTransport(
+      client: client,
+      sessionId: 'testsession',
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      pollInterval: const Duration(days: 1),
+      maxPollInterval: const Duration(days: 2),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      uploadMinInterval: Duration.zero,
+      uploadRateLimitPerMinute: 50,
+      logger: const Logger(),
+      onTraffic: deltas.add,
+    );
+
+    await transport.start();
+    final incoming = expectLater(
+      transport.incomingFiles(),
+      emits(
+        isA<IncomingTunnelFile>().having(
+          (file) => file.bytes.length,
+          'bytes.length',
+          5,
+        ),
+      ),
+    );
+    client.addUpdate(
+      const BaleMessageUpdate(
+        BaleMessage(
+          chat: BalePeer.private(42),
+          senderId: 42,
+          messageId: 7,
+          date: 1,
+          document: BaleFileDetails(
+            fileId: 1,
+            accessHash: 2,
+            name: 'btun_testsession_r2c_00000001.bin',
+            size: 5,
+            mimeType: 'application/octet-stream',
+          ),
+        ),
+      ),
+    );
+
+    await incoming;
+    expect(deltas.map((delta) => delta.downloadedBytes), [5]);
+    expect(deltas.single.uploadedBytes, isZero);
+    await transport.close();
+  });
+
   test('saved messages upload rate limit fails fast for failover', () async {
     final temp = await Directory.systemTemp.createTemp(
       'btun_upload_failover_test_',
@@ -1273,6 +1478,50 @@ void main() {
     expect(config.maxRetryBytes, 64 * 1024 * 1024);
   });
 
+  test('config defaults to balanced transfer mode', () {
+    final config = BtunConfig.defaults(profileDir: '.btun-test');
+
+    expect(config.transferMode, BtunTransferMode.balanced);
+    expect(config.chunkSize, 1024 * 1024);
+    expect(config.bulkChunkSize, 2 * 1024 * 1024);
+    expect(config.flushDelay, const Duration(milliseconds: 150));
+    expect(config.uploadRateLimitPerMinute, 50);
+    expect(config.interactiveChunkSize, 4096);
+  });
+
+  test('bulk transfer mode applies large cadence preset', () {
+    final config = BtunConfig.fromJson({
+      'role': 'client',
+      'database': 'state.json',
+      'session_id': 'testsession',
+      'local_public_key': '',
+      'local_private_key': '',
+      'transfer_mode': 'bulk',
+    });
+
+    expect(config.transferMode, BtunTransferMode.bulk);
+    expect(config.chunkSize, 4 * 1024 * 1024);
+    expect(config.bulkChunkSize, 4 * 1024 * 1024);
+    expect(config.flushDelay, const Duration(seconds: 3));
+    expect(config.bulkFlushDelay, const Duration(seconds: 3));
+    expect(config.ackFlushInterval, const Duration(milliseconds: 800));
+    expect(config.maxAckFlushInterval, const Duration(milliseconds: 1500));
+    expect(config.uploadRateLimitPerMinute, 30);
+    expect(config.maxRetryBytes, 128 * 1024 * 1024);
+    expect(config.interactiveChunkSize, 4 * 1024 * 1024);
+  });
+
+  test('transfer mode round trips through config json', () {
+    final config = BtunConfig.defaults(
+      profileDir: '.btun-test',
+    ).copyWith(transferMode: BtunTransferMode.bulk);
+    final decoded = BtunConfig.fromJson(config.toJson());
+
+    expect(decoded.transferMode, BtunTransferMode.bulk);
+    expect(decoded.chunkSize, 4 * 1024 * 1024);
+    expect(decoded.maxRetryBytes, 128 * 1024 * 1024);
+  });
+
   test('config clamps unsafe adaptive values to stable bounds', () {
     final config = BtunConfig.fromJson({
       'role': 'client',
@@ -1343,12 +1592,16 @@ void main() {
 }
 
 class _FakeBaleClient extends BaleClient {
-  _FakeBaleClient({this.sendError, List<Object> loadHistoryErrors = const []})
-    : _loadHistoryErrors = List<Object>.of(loadHistoryErrors);
+  _FakeBaleClient({
+    this.sendError,
+    this.downloadBytes = const [],
+    List<Object> loadHistoryErrors = const [],
+  }) : _loadHistoryErrors = List<Object>.of(loadHistoryErrors);
 
   final sentAt = <DateTime>[];
   final _updates = StreamController<BaleUpdate>.broadcast();
   final Object? sendError;
+  final List<int> downloadBytes;
   final List<Object> _loadHistoryErrors;
   var loadHistoryCalls = 0;
 
@@ -1388,6 +1641,19 @@ class _FakeBaleClient extends BaleClient {
       messageId: messageId ?? sentAt.length,
       date: sentAt.length,
     );
+  }
+
+  @override
+  Future<List<int>> downloadFile({
+    required int fileId,
+    required int accessHash,
+    void Function(List<int> chunk)? onChunk,
+  }) async {
+    return downloadBytes;
+  }
+
+  void addUpdate(BaleUpdate update) {
+    _updates.add(update);
   }
 }
 

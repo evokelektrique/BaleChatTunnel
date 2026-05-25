@@ -4,6 +4,23 @@ import 'dart:math';
 
 enum BtunRole { client, relay }
 
+enum BtunTransferMode {
+  balanced,
+  bulk,
+  lowLatency;
+
+  static BtunTransferMode parse(String? value) {
+    final normalized = value?.trim().toLowerCase().replaceAll('-', '_');
+    if (normalized == 'low_latency' || normalized == 'lowlatency') {
+      return BtunTransferMode.lowLatency;
+    }
+    for (final mode in values) {
+      if (mode.name.toLowerCase() == normalized) return mode;
+    }
+    return BtunTransferMode.balanced;
+  }
+}
+
 class BtunAdaptiveConfig {
   const BtunAdaptiveConfig({
     required this.minPollInterval,
@@ -47,6 +64,42 @@ class BtunAdaptiveConfig {
     maxInFlight: 1,
     maxStreams: 4,
   );
+
+  static const bulk = BtunAdaptiveConfig(
+    minPollInterval: Duration(milliseconds: 2000),
+    maxPollInterval: Duration(milliseconds: 2000),
+    minAckFlushInterval: Duration(milliseconds: 800),
+    maxAckFlushInterval: Duration(milliseconds: 1500),
+    minFlushDelay: Duration(milliseconds: 3000),
+    maxFlushDelay: Duration(milliseconds: 3000),
+    minUploadRatePerMinute: 20,
+    maxUploadRatePerMinute: 30,
+    minChunkSize: 4 * 1024 * 1024,
+    maxChunkSize: 4 * 1024 * 1024,
+    maxInFlight: 1,
+    maxStreams: 4,
+  );
+
+  static const lowLatency = BtunAdaptiveConfig(
+    minPollInterval: Duration(milliseconds: 2000),
+    maxPollInterval: Duration(milliseconds: 2000),
+    minAckFlushInterval: Duration(milliseconds: 300),
+    maxAckFlushInterval: Duration(milliseconds: 600),
+    minFlushDelay: Duration(milliseconds: 100),
+    maxFlushDelay: Duration(milliseconds: 500),
+    minUploadRatePerMinute: 40,
+    maxUploadRatePerMinute: 50,
+    minChunkSize: 1024 * 1024,
+    maxChunkSize: 2 * 1024 * 1024,
+    maxInFlight: 1,
+    maxStreams: 4,
+  );
+
+  static BtunAdaptiveConfig preset(BtunTransferMode mode) => switch (mode) {
+    BtunTransferMode.balanced => defaults,
+    BtunTransferMode.bulk => bulk,
+    BtunTransferMode.lowLatency => lowLatency,
+  };
 
   static BtunAdaptiveConfig fromJson(Map<String, Object?>? json) {
     if (json == null) return defaults;
@@ -203,6 +256,7 @@ class BtunAdaptiveConfig {
 class BtunConfig {
   const BtunConfig({
     required this.role,
+    required this.transferMode,
     required this.accounts,
     required this.database,
     required this.sessionId,
@@ -218,6 +272,7 @@ class BtunConfig {
   });
 
   final BtunRole role;
+  final BtunTransferMode transferMode;
   final List<BtunAccountConfig> accounts;
   final String database;
   final String sessionId;
@@ -231,18 +286,25 @@ class BtunConfig {
   final int maxRetryChunks;
   final int maxRetryBytes;
 
-  int get chunkSize => adaptive.minChunkSize;
-  int get bulkChunkSize => adaptive.maxChunkSize;
-  int get maxInFlight => adaptive.maxInFlight;
-  Duration get pollInterval => adaptive.minPollInterval;
-  Duration get maxPollInterval => adaptive.maxPollInterval;
+  BtunAdaptiveConfig get effectiveAdaptive =>
+      transferMode == BtunTransferMode.balanced
+      ? adaptive
+      : BtunAdaptiveConfig.preset(transferMode);
+
+  int get chunkSize => effectiveAdaptive.minChunkSize;
+  int get bulkChunkSize => effectiveAdaptive.maxChunkSize;
+  int get maxInFlight => effectiveAdaptive.maxInFlight;
+  Duration get pollInterval => effectiveAdaptive.minPollInterval;
+  Duration get maxPollInterval => effectiveAdaptive.maxPollInterval;
   Duration get uploadMinInterval => Duration.zero;
-  int get uploadRateLimitPerMinute => adaptive.maxUploadRatePerMinute;
-  Duration get ackFlushInterval => adaptive.minAckFlushInterval;
-  Duration get maxAckFlushInterval => adaptive.maxAckFlushInterval;
-  Duration get flushDelay => adaptive.minFlushDelay;
-  Duration get bulkFlushDelay => adaptive.maxFlushDelay;
-  int get maxStreams => adaptive.maxStreams;
+  int get uploadRateLimitPerMinute => effectiveAdaptive.maxUploadRatePerMinute;
+  Duration get ackFlushInterval => effectiveAdaptive.minAckFlushInterval;
+  Duration get maxAckFlushInterval => effectiveAdaptive.maxAckFlushInterval;
+  Duration get flushDelay => effectiveAdaptive.minFlushDelay;
+  Duration get bulkFlushDelay => effectiveAdaptive.maxFlushDelay;
+  int get maxStreams => effectiveAdaptive.maxStreams;
+  int get interactiveChunkSize =>
+      transferMode == BtunTransferMode.bulk ? chunkSize : 4096;
 
   static String defaultProfileDir() => '.btun';
   static String defaultConfigPath(String profileDir) =>
@@ -255,6 +317,7 @@ class BtunConfig {
 
   static BtunConfig defaults({String profileDir = '.btun'}) => BtunConfig(
     role: BtunRole.client,
+    transferMode: BtunTransferMode.balanced,
     accounts: const [],
     database: defaultDatabasePath(profileDir),
     sessionId: randomSessionId(),
@@ -297,6 +360,7 @@ class BtunConfig {
     final retryMs = json['retry_timeout_ms'] as int?;
     return BtunConfig(
       role: _role(json['role'] as String? ?? 'client'),
+      transferMode: BtunTransferMode.parse(json['transfer_mode'] as String?),
       accounts: [
         for (final account in json['accounts'] as List? ?? const [])
           BtunAccountConfig.fromJson(account as Map<String, Object?>),
@@ -313,7 +377,11 @@ class BtunConfig {
       ),
       retryTimeout: Duration(milliseconds: retryMs ?? 120000),
       maxRetryChunks: json['max_retry_chunks'] as int? ?? 64,
-      maxRetryBytes: json['max_retry_bytes'] as int? ?? 64 * 1024 * 1024,
+      maxRetryBytes:
+          json['max_retry_bytes'] as int? ??
+          _defaultMaxRetryBytes(
+            BtunTransferMode.parse(json['transfer_mode'] as String?),
+          ),
     );
   }
 
@@ -330,6 +398,7 @@ class BtunConfig {
 
   Map<String, Object?> toJson() => {
     'role': role.name,
+    'transfer_mode': transferMode.name,
     'accounts': [for (final account in accounts) account.toJson()],
     'database': database,
     'session_id': sessionId,
@@ -346,6 +415,7 @@ class BtunConfig {
 
   BtunConfig copyWith({
     BtunRole? role,
+    BtunTransferMode? transferMode,
     List<BtunAccountConfig>? accounts,
     String? database,
     String? sessionId,
@@ -380,8 +450,17 @@ class BtunConfig {
       maxFlushDelay: bulkFlushDelay,
       maxStreams: maxStreams,
     );
+    final nextTransferMode = transferMode ?? this.transferMode;
+    final nextMaxRetryBytes =
+        maxRetryBytes ??
+        (transferMode != null &&
+                this.transferMode != nextTransferMode &&
+                this.maxRetryBytes == _defaultMaxRetryBytes(this.transferMode)
+            ? _defaultMaxRetryBytes(nextTransferMode)
+            : this.maxRetryBytes);
     return BtunConfig(
       role: role ?? this.role,
+      transferMode: nextTransferMode,
       accounts: accounts ?? this.accounts,
       database: database ?? this.database,
       sessionId: sessionId ?? this.sessionId,
@@ -393,7 +472,7 @@ class BtunConfig {
       adaptive: nextAdaptive,
       retryTimeout: retryTimeout ?? this.retryTimeout,
       maxRetryChunks: maxRetryChunks ?? this.maxRetryChunks,
-      maxRetryBytes: maxRetryBytes ?? this.maxRetryBytes,
+      maxRetryBytes: nextMaxRetryBytes,
     );
   }
 
@@ -431,6 +510,12 @@ class BtunConfig {
   static BtunRole _role(String value) => switch (value) {
     'relay' => BtunRole.relay,
     _ => BtunRole.client,
+  };
+
+  static int _defaultMaxRetryBytes(BtunTransferMode mode) => switch (mode) {
+    BtunTransferMode.bulk => 128 * 1024 * 1024,
+    BtunTransferMode.balanced ||
+    BtunTransferMode.lowLatency => 64 * 1024 * 1024,
   };
 }
 

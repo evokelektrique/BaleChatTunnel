@@ -21,7 +21,7 @@ class BtunClient {
   Future<BtunStream> open(
     String host,
     int port, {
-    Duration slotTimeout = const Duration(seconds: 30),
+    Duration slotTimeout = const Duration(minutes: 2),
   }) async {
     await _waitForStreamSlot(slotTimeout);
     final streamId = _nextStreamId();
@@ -59,7 +59,7 @@ class BtunClient {
     int port,
     List<int> request, {
     bool closeAfterWrite = false,
-    Duration timeout = const Duration(seconds: 60),
+    Duration timeout = const Duration(minutes: 5),
   }) async {
     final stream = await open(host, port);
     final out = BytesBuilder(copy: false);

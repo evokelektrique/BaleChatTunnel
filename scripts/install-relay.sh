@@ -22,16 +22,60 @@ say() {
 }
 
 print_next_steps() {
-  say "next commands:"
-  say "  $install_dir/$binary_name account list --profile $profile"
-  say "  $install_dir/$binary_name account add --profile $profile"
-  say "  $install_dir/$binary_name init --profile $profile --client-public-key CLIENT_PUBLIC_KEY"
+  cat <<EOF
+
+btun installer: relay setup summary
+  Binary:  $install_dir/$binary_name
+  Profile: $profile
+  Service: $service_name
+
+btun installer: next steps
+
+  1. Confirm that at least one Bale account is available for the relay.
+     This lists the accounts saved in the relay profile:
+
+       $install_dir/$binary_name account list --profile "$profile"
+
+     If the list is empty, add one now:
+
+       $install_dir/$binary_name account add --profile "$profile"
+
+  2. Exchange tunnel keys with the client machine.
+     Send the relay_public_key printed by setup to the client GUI Settings
+     page, then paste the client's public key back into this relay:
+
+       $install_dir/$binary_name init --profile "$profile" --client-public-key CLIENT_PUBLIC_KEY
+
+  3. Pick or change the transfer mode when needed.
+     In interactive setup, enter 1 for balanced, 2 for bulk, or 3 for
+     low-latency. balanced is the default, bulk favors large transfers, and
+     low-latency favors interactive browsing. To persist a relay preference:
+
+       $install_dir/$binary_name init --profile "$profile" --transfer-mode balanced
+
+EOF
   if command -v systemctl >/dev/null 2>&1 && [ "$install_service" != "0" ]; then
-    say "  systemctl --user restart $service_name"
-    say "  systemctl --user status $service_name"
-    say "  journalctl --user -u $service_name -f"
+    cat <<EOF
+  4. Start or restart the user service after keys/accounts are ready:
+
+       systemctl --user restart "$service_name"
+
+     Check whether it stayed running:
+
+       systemctl --user status "$service_name"
+
+     Follow live relay logs:
+
+       journalctl --user -u "$service_name" -f
+
+EOF
   else
-    say "  $install_dir/$binary_name relay --profile $profile"
+    cat <<EOF
+  4. Start the relay manually:
+
+       $install_dir/$binary_name relay --profile "$profile"
+
+EOF
   fi
 }
 

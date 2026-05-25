@@ -185,7 +185,7 @@ class _SocketReadBuffer {
       }
       if (_done) throw const SocketException('socket closed');
       _waiter = Completer<void>();
-      await _waiter!.future.timeout(const Duration(seconds: 10));
+      await _waiter!.future.timeout(const Duration(seconds: 30));
     }
     return out.takeBytes();
   }

@@ -50,6 +50,19 @@ void main() {
       expect(output.toString(), contains('Invalid input'));
       expect('Enable'.allMatches(output.toString()).length, 3);
     });
+
+    test('transfer mode accepts numbered choices', () async {
+      final output = StringBuffer();
+      final wizard = _wizard(lines: ['2'], output: output);
+
+      final value = await wizard.promptTransferMode(
+        'Transfer mode',
+        defaultValue: BtunTransferMode.balanced,
+      );
+
+      expect(value, BtunTransferMode.bulk);
+      expect(output.toString(), contains('Transfer mode [1 balanced]:'));
+    });
   });
 
   group('setup flow', () {
@@ -68,6 +81,7 @@ void main() {
         BtunConfig.defaultConfigPath(temp.path),
       );
       expect(config.role, BtunRole.relay);
+      expect(config.transferMode, BtunTransferMode.balanced);
       expect(config.localPublicKey, isNotEmpty);
       expect(config.peerPublicKey, '');
       expect(output.toString(), contains('relay_public_key:'));
@@ -91,15 +105,7 @@ void main() {
           .save(path);
 
       await _wizard(
-        lines: [
-          'yes',
-          '',
-          '',
-          '',
-          '',
-          '',
-          'no',
-        ],
+        lines: ['yes', '', '', '', '', '', '', 'no'],
         output: StringBuffer(),
         profile: temp.path,
       ).run();
@@ -123,6 +129,7 @@ void main() {
             'peer-key',
             '127.0.0.2',
             '1081',
+            '3',
             'no',
           ],
           output: output,
@@ -138,6 +145,7 @@ void main() {
         expect(output.toString(), contains('client_public_key:'));
         expect(config.socksHost, '127.0.0.2');
         expect(config.socksPort, 1081);
+        expect(config.transferMode, BtunTransferMode.lowLatency);
         expect(config.adaptive, BtunAdaptiveConfig.defaults);
         expect(config.maxRetryChunks, 64);
         expect(config.maxRetryBytes, 64 * 1024 * 1024);
@@ -167,6 +175,26 @@ void main() {
       expect(config.role, BtunRole.relay);
       expect(output.toString(), contains('Using role relay.'));
     });
+
+    test('transfer mode argument overrides setup prompt', () async {
+      final temp = await Directory.systemTemp.createTemp('btun_setup_test_');
+      addTearDown(() => temp.delete(recursive: true));
+      final output = StringBuffer();
+
+      await _wizard(
+        lines: _defaultSetupLines(login: 'no', role: false, transfer: false),
+        output: output,
+        profile: temp.path,
+        role: BtunRole.relay,
+        transferMode: BtunTransferMode.bulk,
+      ).run();
+
+      final config = await BtunConfig.load(
+        BtunConfig.defaultConfigPath(temp.path),
+      );
+      expect(config.transferMode, BtunTransferMode.bulk);
+      expect(output.toString(), contains('Using transfer mode bulk.'));
+    });
   });
 }
 
@@ -175,6 +203,7 @@ BtunSetupWizard _wizard({
   required StringBuffer output,
   String? profile,
   BtunRole? role,
+  BtunTransferMode? transferMode,
 }) {
   var index = 0;
   return BtunSetupWizard(
@@ -185,11 +214,13 @@ BtunSetupWizard _wizard({
     configPathFromArgs: null,
     sessionPathFromArgs: null,
     roleFromArgs: role,
+    transferModeFromArgs: transferMode,
     loginRunner: (_) async => null,
   );
 }
 
-List<String> _defaultSetupLines({required String login, bool role = true}) => [
-  ...List.filled(role ? 3 : 2, ''),
-  login,
-];
+List<String> _defaultSetupLines({
+  required String login,
+  bool role = true,
+  bool transfer = true,
+}) => [...List.filled((role ? 3 : 2) + (transfer ? 1 : 0), ''), login];

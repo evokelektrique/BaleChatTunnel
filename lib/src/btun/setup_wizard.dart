@@ -17,6 +17,7 @@ class BtunSetupWizard {
     required this.configPathFromArgs,
     required this.sessionPathFromArgs,
     required this.roleFromArgs,
+    required this.transferModeFromArgs,
     required this.loginRunner,
   });
 
@@ -27,6 +28,7 @@ class BtunSetupWizard {
     required String? configPathFromArgs,
     required String? sessionPathFromArgs,
     required BtunRole? roleFromArgs,
+    required BtunTransferMode? transferModeFromArgs,
     required LoginRunner loginRunner,
   }) : this(
          readLine: stdin.readLineSync,
@@ -36,6 +38,7 @@ class BtunSetupWizard {
          configPathFromArgs: configPathFromArgs,
          sessionPathFromArgs: sessionPathFromArgs,
          roleFromArgs: roleFromArgs,
+         transferModeFromArgs: transferModeFromArgs,
          loginRunner: loginRunner,
        );
 
@@ -46,6 +49,7 @@ class BtunSetupWizard {
   final String? configPathFromArgs;
   final String? sessionPathFromArgs;
   final BtunRole? roleFromArgs;
+  final BtunTransferMode? transferModeFromArgs;
   final LoginRunner loginRunner;
 
   Future<BtunConfig> run() async {
@@ -148,6 +152,20 @@ class BtunSetupWizard {
 
     writeln('');
     writeln('Transport/performance');
+    final transferMode =
+        transferModeFromArgs ??
+        await promptTransferMode(
+          'Transfer mode',
+          defaultValue: defaults.transferMode,
+          help:
+              'Choose 1 for balanced, 2 for bulk, or 3 for low-latency. '
+              'balanced is the general-purpose default. bulk favors large '
+              'downloads/uploads with fewer Bale files. low-latency favors '
+              'interactive browsing and quicker small writes.',
+        );
+    if (transferModeFromArgs != null) {
+      writeln('Using transfer mode ${transferMode.name}.');
+    }
     writeln('Adaptive transport is always enabled.');
     final maxRetryChunks = defaults.maxRetryChunks;
     final maxRetryBytes = defaults.maxRetryBytes;
@@ -161,6 +179,7 @@ class BtunSetupWizard {
       peerPublicKey: peerPublicKey,
       socksHost: socksHost,
       socksPort: socksPort,
+      transferMode: transferMode,
       maxRetryChunks: maxRetryChunks,
       maxRetryBytes: maxRetryBytes,
     );
@@ -232,6 +251,12 @@ class BtunSetupWizard {
     BtunRole.relay => 'CLIENT_PUBLIC_KEY',
   };
 
+  String _transferModeText(BtunTransferMode mode) => switch (mode) {
+    BtunTransferMode.balanced => '1 balanced',
+    BtunTransferMode.bulk => '2 bulk',
+    BtunTransferMode.lowLatency => '3 low-latency',
+  };
+
   Future<String> promptString(
     String label, {
     required String defaultValue,
@@ -267,6 +292,33 @@ class BtunSetupWizard {
           'relay' => BtunRole.relay,
           'client' => BtunRole.client,
           _ => throw const FormatException('enter one of: client, relay'),
+        };
+      },
+    );
+  }
+
+  Future<BtunTransferMode> promptTransferMode(
+    String label, {
+    required BtunTransferMode defaultValue,
+    String? help,
+  }) {
+    return _prompt<BtunTransferMode>(
+      label,
+      defaultText: _transferModeText(defaultValue),
+      help: help,
+      parse: (input) {
+        final value = input.isEmpty ? _transferModeText(defaultValue) : input;
+        return switch (value.trim().toLowerCase().replaceAll('-', '_')) {
+          '1' || '1 balanced' || 'balanced' => BtunTransferMode.balanced,
+          '2' || '2 bulk' || 'bulk' => BtunTransferMode.bulk,
+          '3' ||
+          '3 low_latency' ||
+          '3 lowlatency' ||
+          'low_latency' ||
+          'lowlatency' => BtunTransferMode.lowLatency,
+          _ => throw const FormatException(
+            'enter 1, 2, 3, balanced, bulk, or low-latency',
+          ),
         };
       },
     );
