@@ -163,6 +163,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Download Linux app
         uses: actions/download-artifact@v4
         with:
@@ -192,6 +195,19 @@ jobs:
         run: |
           mv release/btun-linux-x64 release/bale-chat-tunnel-cli-linux-x64
           mv release/btun-windows-x64.exe release/bale-chat-tunnel-cli-windows-x64.exe
+      - name: Generate release notes
+        run: |
+          current_commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          previous_tag="$(git describe --tags --match 'v*' --abbrev=0 "${current_commit}^" 2>/dev/null || true)"
+          {
+            printf '## Changes\n\n'
+            if [ -n "$previous_tag" ]; then
+              git log --pretty=format:'- %s (%h)' "${previous_tag}..${current_commit}"
+              printf '\n\n**Full changelog**: https://github.com/%s/compare/%s...%s\n' "$GITHUB_REPOSITORY" "$previous_tag" "$GITHUB_REF_NAME"
+            else
+              git log --pretty=format:'- %s (%h)' "$current_commit"
+            fi
+          } > release-notes.md
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -204,4 +220,4 @@ jobs:
             release/bale-chat-tunnel-desktop-windows-x64.zip \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes
+            --notes-file release-notes.md
