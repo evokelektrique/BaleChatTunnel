@@ -46,17 +46,6 @@ class StateDb {
     _flush();
   }
 
-  bool hasReceivedChunk(int sequenceNumber) {
-    // Chunk sequence numbers prevent duplicate frame delivery when the sender
-    // retries an upload before receiving an ACK.
-    return _state.receivedChunks.containsKey(sequenceNumber.toString());
-  }
-
-  void markReceivedChunk(int sequenceNumber) {
-    _state.receivedChunks[sequenceNumber.toString()] = _now();
-    _flush();
-  }
-
   void upsertStream({
     required int streamId,
     required String host,
@@ -94,29 +83,19 @@ class StateDb {
 }
 
 class _StateSnapshot {
-  _StateSnapshot({
-    required this.processedMessages,
-    required this.receivedChunks,
-    required this.streams,
-  });
+  _StateSnapshot({required this.processedMessages, required this.streams});
 
   final Map<String, int> processedMessages;
-  final Map<String, int> receivedChunks;
   final Map<String, _StreamRecord> streams;
 
   factory _StateSnapshot.empty() {
-    return _StateSnapshot(
-      processedMessages: {},
-      receivedChunks: {},
-      streams: {},
-    );
+    return _StateSnapshot(processedMessages: {}, streams: {});
   }
 
   factory _StateSnapshot.fromJson(Map<String, Object?> json) {
     final streamsJson = json['streams'] as Map? ?? const {};
     return _StateSnapshot(
       processedMessages: _intMap(json['processed_messages']),
-      receivedChunks: _intMap(json['received_chunks']),
       streams: {
         for (final entry in streamsJson.entries)
           entry.key as String: _StreamRecord.fromJson(
@@ -128,7 +107,6 @@ class _StateSnapshot {
 
   Map<String, Object?> toJson() => {
     'processed_messages': processedMessages,
-    'received_chunks': receivedChunks,
     'streams': {
       for (final entry in streams.entries) entry.key: entry.value.toJson(),
     },

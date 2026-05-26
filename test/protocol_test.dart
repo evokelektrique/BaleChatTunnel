@@ -1,16 +1,17 @@
-import 'dart:convert';
 import 'dart:math';
 
 import 'package:bale_chat_tunnel/btun.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('binary chunk round trips all frame types', () {
+  test('binary v4 chunk round trips all frame types', () {
     final chunk = PlainChunk(
-      version: 2,
+      version: 4,
       sessionId: 'ab12cd34',
       direction: Direction.c2r,
       sequenceNumber: 7,
+      chunkEpoch: 'epoch-all',
+      reliableSequenceNumber: 5,
       frames: [
         TunnelFrame.open(
           sessionId: 'ab12cd34',
@@ -51,10 +52,12 @@ void main() {
     final decoded = PlainChunk.decode(chunk.encode());
 
     expect(chunk.encode().first, isNot('{'.codeUnitAt(0)));
-    expect(decoded.version, 2);
+    expect(decoded.version, 4);
     expect(decoded.sessionId, 'ab12cd34');
     expect(decoded.direction, Direction.c2r);
     expect(decoded.sequenceNumber, 7);
+    expect(decoded.chunkEpoch, 'epoch-all');
+    expect(decoded.reliableSequenceNumber, 5);
     expect(decoded.frames.map((frame) => frame.type), [
       FrameType.open,
       FrameType.data,
@@ -69,66 +72,51 @@ void main() {
     expect(decoded.frames[4].message, 'boom');
   });
 
-  test('legacy JSON/base64 plain chunk decode fallback remains readable', () {
-    final bytes = utf8.encode(
-      jsonEncode({
-        'version': 1,
-        'session_id': 'legacy',
-        'direction': 'r2c',
-        'sequence_number': 11,
-        'frames': [
-          {
-            'version': 1,
-            'session_id': 'legacy',
-            'direction': 'r2c',
-            'stream_id': 5,
-            'sequence_number': 6,
-            'ack_number': 0,
-            'type': 'data',
-            'payload': base64Encode([7, 8, 9]),
-          },
-        ],
-      }),
+  test('binary v4 chunk round trips reliable sequence metadata', () {
+    final chunk = PlainChunk(
+      version: 4,
+      sessionId: 'v4session',
+      direction: Direction.r2c,
+      sequenceNumber: 12,
+      chunkEpoch: 'epoch-1',
+      reliableSequenceNumber: 0,
+      ackOnly: true,
+      frames: [
+        TunnelFrame.ack(
+          sessionId: 'v4session',
+          direction: Direction.r2c,
+          ackNumber: 8,
+          sackRanges: const [AckRange(start: 10, end: 11)],
+        ),
+      ],
     );
 
-    final decoded = PlainChunk.decode(bytes);
+    final decoded = PlainChunk.decode(chunk.encode());
 
-    expect(decoded.version, 1);
-    expect(decoded.sessionId, 'legacy');
-    expect(decoded.direction, Direction.r2c);
-    expect(decoded.frames.single.payload, [7, 8, 9]);
+    expect(decoded.version, 4);
+    expect(decoded.sequenceNumber, 12);
+    expect(decoded.chunkEpoch, 'epoch-1');
+    expect(decoded.reliableSequenceNumber, 0);
+    expect(decoded.ackOnly, isTrue);
+    expect(decoded.frames.single.sackRanges.single.start, 10);
+    expect(decoded.frames.single.sackRanges.single.end, 11);
   });
 
-  test(
-    'legacy JSON/base64 encrypted wrapper decode fallback remains readable',
-    () {
-      final bytes = utf8.encode(
-        jsonEncode({
-          'metadata': {
-            'magic': 'btun',
-            'version': 1,
-            'session_id': 'legacy',
-            'direction': 'c2r',
-            'sequence_number': 12,
-            'message_type': 'chunk',
-            'nonce': base64Encode(List<int>.filled(12, 1)),
-          },
-          'ciphertext': base64Encode([1, 2, 3]),
-          'mac': base64Encode(List<int>.filled(16, 2)),
-        }),
-      );
+  test('legacy JSON/base64 plain chunk decode is rejected', () {
+    expect(
+      () => PlainChunk.decode('{ "version": 1 }'.codeUnits),
+      throwsFormatException,
+    );
+  });
 
-      final decoded = EncryptedChunkFile.decode(bytes);
+  test('legacy JSON/base64 encrypted wrapper decode is rejected', () {
+    expect(
+      () => EncryptedChunkFile.decode('{ "metadata": {} }'.codeUnits),
+      throwsFormatException,
+    );
+  });
 
-      expect(decoded.metadata.version, 1);
-      expect(decoded.metadata.compressed, isFalse);
-      expect(decoded.metadata.nonce, List<int>.filled(12, 1));
-      expect(decoded.cipherText, [1, 2, 3]);
-      expect(decoded.mac, List<int>.filled(16, 2));
-    },
-  );
-
-  test('encrypted v2 round trips with compression enabled', () async {
+  test('encrypted v4 round trips with compression enabled', () async {
     final clientKeys = await BtunCrypto.generateKeyPair();
     final relayKeys = await BtunCrypto.generateKeyPair();
     final clientConfig = BtunConfig.defaults().copyWith(
@@ -154,10 +142,12 @@ void main() {
       receive: Direction.c2r,
     );
     final chunk = PlainChunk(
-      version: 2,
+      version: 4,
       sessionId: 'compress',
       direction: Direction.c2r,
       sequenceNumber: 1,
+      chunkEpoch: 'compress-epoch',
+      reliableSequenceNumber: 1,
       frames: [
         TunnelFrame.data(
           sessionId: 'compress',
@@ -173,14 +163,15 @@ void main() {
     final decoded = EncryptedChunkFile.decode(encrypted.encode());
     final plain = await receiver.decrypt(decoded);
 
-    expect(encrypted.metadata.version, 2);
+    expect(encrypted.metadata.version, 4);
+    expect(encrypted.metadata.chunkEpoch, 'compress-epoch');
     expect(encrypted.metadata.compressed, isTrue);
     expect(encrypted.encode().first, isNot('{'.codeUnitAt(0)));
     expect(plain.frames.single.payload, List<int>.filled(8192, 65));
   });
 
   test(
-    'encrypted v2 round trips uncompressed when compression is not smaller',
+    'encrypted v4 round trips uncompressed when compression is not smaller',
     () async {
       final clientKeys = await BtunCrypto.generateKeyPair();
       final relayKeys = await BtunCrypto.generateKeyPair();
@@ -209,10 +200,12 @@ void main() {
       final random = Random(1);
       final payload = List<int>.generate(4096, (_) => random.nextInt(256));
       final chunk = PlainChunk(
-        version: 2,
+        version: 4,
         sessionId: 'raw',
         direction: Direction.c2r,
         sequenceNumber: 1,
+        chunkEpoch: 'raw-epoch',
+        reliableSequenceNumber: 1,
         frames: [
           TunnelFrame.data(
             sessionId: 'raw',

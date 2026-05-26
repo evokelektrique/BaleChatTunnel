@@ -246,10 +246,12 @@ void main() {
       );
       final incoming = await relayCrypto.encrypt(
         PlainChunk(
-          version: 1,
+          version: 4,
           sessionId: clientConfig.sessionId,
           direction: Direction.r2c,
           sequenceNumber: 7,
+          chunkEpoch: 'remote-test-epoch',
+          reliableSequenceNumber: 7,
           frames: [
             TunnelFrame.data(
               sessionId: clientConfig.sessionId,
@@ -361,6 +363,51 @@ void main() {
     ]);
     await chunkTransport.close();
   });
+
+  test(
+    'frame sequence allocation does not skip chunk sequence numbers',
+    () async {
+      final harness = await _ChunkHarness.create('btun_sequence_space_test_');
+      addTearDown(harness.dispose);
+
+      await harness.chunkTransport.sendFrame(
+        TunnelFrame.open(
+          sessionId: harness.clientConfig.sessionId,
+          direction: Direction.c2r,
+          streamId: 1,
+          sequenceNumber: harness.chunkTransport.allocateSequence(),
+          host: 'example.com',
+          port: 443,
+        ),
+      );
+      await harness.chunkTransport.flush();
+      await harness.chunkTransport.sendFrame(
+        TunnelFrame.data(
+          sessionId: harness.clientConfig.sessionId,
+          direction: Direction.c2r,
+          streamId: 1,
+          sequenceNumber: harness.chunkTransport.allocateSequence(),
+          payload: [1],
+        ),
+      );
+      await harness.chunkTransport.flush();
+      await harness.chunkTransport.sendFrame(
+        TunnelFrame.close(
+          sessionId: harness.clientConfig.sessionId,
+          direction: Direction.c2r,
+          streamId: 1,
+          sequenceNumber: harness.chunkTransport.allocateSequence(),
+        ),
+      );
+      await harness.chunkTransport.flush();
+
+      expect(harness.transport.sent.map((file) => file.sequenceNumber), [
+        1,
+        2,
+        3,
+      ]);
+    },
+  );
 
   test(
     'chunk transport flushes immediately when queued bytes hit chunk size',
@@ -859,10 +906,13 @@ void main() {
     );
     final incoming = await relayCrypto.encrypt(
       PlainChunk(
-        version: 1,
+        version: 4,
         sessionId: clientConfig.sessionId,
         direction: Direction.r2c,
         sequenceNumber: 1,
+        chunkEpoch: 'remote-test-epoch',
+        reliableSequenceNumber: 0,
+        ackOnly: true,
         frames: [
           TunnelFrame.ack(
             sessionId: clientConfig.sessionId,
@@ -886,7 +936,7 @@ void main() {
     await chunkTransport.close();
   });
 
-  test('chunk transport treats ack numbers as exact chunk receipts', () async {
+  test('chunk transport treats ack numbers as cumulative receipts', () async {
     final temp = await Directory.systemTemp.createTemp('btun_exact_ack_test_');
     addTearDown(() => temp.delete(recursive: true));
     final clientKeys = await BtunCrypto.generateKeyPair();
@@ -955,10 +1005,13 @@ void main() {
     );
     final incoming = await relayCrypto.encrypt(
       PlainChunk(
-        version: 1,
+        version: 4,
         sessionId: clientConfig.sessionId,
         direction: Direction.r2c,
         sequenceNumber: 1,
+        chunkEpoch: 'remote-test-epoch',
+        reliableSequenceNumber: 0,
+        ackOnly: true,
         frames: [
           TunnelFrame.ack(
             sessionId: clientConfig.sessionId,
@@ -983,7 +1036,7 @@ void main() {
           .skip(2)
           .map((file) => file.sequenceNumber)
           .contains(firstSequence),
-      isTrue,
+      isFalse,
     );
     expect(
       transport.sent
@@ -1043,10 +1096,12 @@ void main() {
     );
     final incoming = await relayCrypto.encrypt(
       PlainChunk(
-        version: 1,
+        version: 4,
         sessionId: clientConfig.sessionId,
         direction: Direction.r2c,
-        sequenceNumber: 7,
+        sequenceNumber: 1,
+        chunkEpoch: 'remote-test-epoch',
+        reliableSequenceNumber: 1,
         frames: [
           TunnelFrame.data(
             sessionId: clientConfig.sessionId,
@@ -1061,7 +1116,7 @@ void main() {
     transport.addIncoming(
       IncomingTunnelFile(
         messageId: 'remote-7',
-        fileName: btunFileName(clientConfig.sessionId, Direction.r2c, 7),
+        fileName: btunFileName(clientConfig.sessionId, Direction.r2c, 1),
         bytes: incoming.encode(),
       ),
     );
@@ -1142,9 +1197,83 @@ void main() {
     },
   );
 
-  test('chunk transport acks duplicates without delivering twice', () async {
+  test(
+    'chunk transport does not repeat identical ack for duplicates',
+    () async {
+      final harness = await _ChunkHarness.create(
+        'btun_reorder_duplicate_test_',
+        ackDelay: Duration.zero,
+      );
+      addTearDown(harness.dispose);
+      final received = <TunnelFrame>[];
+      final sub = harness.chunkTransport.frames.listen(received.add);
+      addTearDown(sub.cancel);
+
+      await harness.addRemoteChunk(1, payload: [1]);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await harness.addRemoteChunk(1, payload: [1]);
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+
+      expect(received.map((frame) => frame.payload.single), [1]);
+      expect(harness.transport.sent, hasLength(1));
+    },
+  );
+
+  test('chunk transport updates ack when receive gap fills', () async {
     final harness = await _ChunkHarness.create(
-      'btun_reorder_duplicate_test_',
+      'btun_reorder_ack_gap_fill_test_',
+      ackDelay: Duration.zero,
+    );
+    addTearDown(harness.dispose);
+
+    await harness.addRemoteChunk(1, payload: [1]);
+    await harness.addRemoteChunk(3, payload: [3]);
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(harness.transport.sent, hasLength(2));
+
+    await harness.addRemoteChunk(3, payload: [3]);
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(harness.transport.sent, hasLength(2));
+
+    await harness.addRemoteChunk(2, payload: [2]);
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(harness.transport.sent, hasLength(3));
+
+    final sent = EncryptedChunkFile.decode(harness.transport.sent.last.bytes);
+    final plain = await harness.relayCrypto.decrypt(sent);
+    final ack = plain.frames.lastWhere((frame) => frame.type == FrameType.ack);
+    expect(ack.ackNumber, 3);
+    expect(ack.sackRanges, isEmpty);
+  });
+
+  test('chunk transport ignores ack-only inbound for outbound ack', () async {
+    final harness = await _ChunkHarness.create(
+      'btun_ack_only_no_loop_test_',
+      ackDelay: Duration.zero,
+    );
+    addTearDown(harness.dispose);
+
+    await harness.chunkTransport.sendFrame(
+      TunnelFrame.data(
+        sessionId: harness.clientConfig.sessionId,
+        direction: Direction.c2r,
+        streamId: 1,
+        sequenceNumber: 1,
+        payload: [9],
+      ),
+    );
+    await harness.chunkTransport.flush();
+    expect(harness.transport.sent, hasLength(1));
+
+    await harness.addRemoteAckOnly(1, ackNumber: 1);
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+
+    expect(harness.transport.sent, hasLength(1));
+  });
+
+  test('v4 ack-only inbound does not block later reliable data', () async {
+    final harness = await _ChunkHarness.create(
+      'btun_v4_ack_only_gap_test_',
       ackDelay: Duration.zero,
     );
     addTearDown(harness.dispose);
@@ -1152,13 +1281,43 @@ void main() {
     final sub = harness.chunkTransport.frames.listen(received.add);
     addTearDown(sub.cancel);
 
-    await harness.addRemoteChunk(1, payload: [1]);
-    await Future<void>.delayed(const Duration(milliseconds: 20));
-    await harness.addRemoteChunk(1, payload: [1]);
+    await harness.addRemoteV4AckOnly(uploadSequence: 1, ackNumber: 0);
+    await harness.addRemoteV4Chunk(
+      uploadSequence: 2,
+      reliableSequence: 1,
+      payload: [7],
+    );
     await Future<void>.delayed(const Duration(milliseconds: 40));
 
-    expect(received.map((frame) => frame.payload.single), [1]);
-    expect(harness.transport.sent, hasLength(2));
+    expect(received.map((frame) => frame.payload.single), [7]);
+  });
+
+  test('v4 ack-only inbound does not establish receive baseline', () async {
+    final harness = await _ChunkHarness.create(
+      'btun_v4_ack_only_baseline_test_',
+      ackDelay: Duration.zero,
+    );
+    addTearDown(harness.dispose);
+    final received = <TunnelFrame>[];
+    final sub = harness.chunkTransport.frames.listen(received.add);
+    addTearDown(sub.cancel);
+
+    await harness.addRemoteV4AckOnly(uploadSequence: 9, ackNumber: 0);
+    await harness.addRemoteV4Chunk(
+      uploadSequence: 10,
+      reliableSequence: 2,
+      payload: [2],
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+
+    expect(received, isEmpty);
+    await harness.addRemoteV4Chunk(
+      uploadSequence: 11,
+      reliableSequence: 1,
+      payload: [1],
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(received.map((frame) => frame.payload.single), [1, 2]);
   });
 
   test(
@@ -1204,6 +1363,116 @@ void main() {
     expect(received.map((frame) => frame.payload.single), [1, 2, 3]);
   });
 
+  test('chunk transport emits sack ranges for buffered chunks', () async {
+    final harness = await _ChunkHarness.create(
+      'btun_sack_test_',
+      ackDelay: Duration.zero,
+    );
+    addTearDown(harness.dispose);
+
+    await harness.addRemoteChunk(1, payload: [1]);
+    await harness.addRemoteChunk(3, payload: [3]);
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+
+    final sent = EncryptedChunkFile.decode(harness.transport.sent.last.bytes);
+    final plain = await harness.relayCrypto.decrypt(sent);
+    final ack = plain.frames.lastWhere((frame) => frame.type == FrameType.ack);
+    expect(ack.ackNumber, 1);
+    expect(ack.sackRanges.map((range) => [range.start, range.end]), [
+      [3, 3],
+    ]);
+  });
+
+  test(
+    'data after ack-only upload keeps contiguous reliable sequence',
+    () async {
+      final harness = await _ChunkHarness.create(
+        'btun_v4_contiguous_reliable_test_',
+        ackDelay: Duration.zero,
+      );
+      addTearDown(harness.dispose);
+
+      await harness.chunkTransport.sendFrame(
+        TunnelFrame.data(
+          sessionId: harness.clientConfig.sessionId,
+          direction: Direction.c2r,
+          streamId: 1,
+          sequenceNumber: 1,
+          payload: [1],
+        ),
+      );
+      await harness.chunkTransport.flush();
+
+      await harness.addRemoteV4Chunk(
+        uploadSequence: 1,
+        reliableSequence: 1,
+        payload: [9],
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+
+      await harness.chunkTransport.sendFrame(
+        TunnelFrame.data(
+          sessionId: harness.clientConfig.sessionId,
+          direction: Direction.c2r,
+          streamId: 1,
+          sequenceNumber: 2,
+          payload: [2],
+        ),
+      );
+      await harness.chunkTransport.flush();
+
+      final plains = <PlainChunk>[];
+      for (final file in harness.transport.sent) {
+        plains.add(
+          await harness.relayCrypto.decrypt(
+            EncryptedChunkFile.decode(file.bytes),
+          ),
+        );
+      }
+      expect(plains.map((chunk) => chunk.sequenceNumber), [1, 2, 3]);
+      expect(plains.map((chunk) => chunk.reliableSequenceNumber), [1, 0, 2]);
+      expect(plains.map((chunk) => chunk.ackOnly), [false, true, false]);
+    },
+  );
+
+  test('sack gap probes earliest missing reliable chunk', () async {
+    final harness = await _ChunkHarness.create(
+      'btun_sack_gap_probe_test_',
+      ackDelay: Duration.zero,
+      retryTimeout: const Duration(minutes: 1),
+      retryTick: const Duration(minutes: 1),
+    );
+    addTearDown(harness.dispose);
+
+    for (var i = 1; i <= 3; i += 1) {
+      await harness.chunkTransport.sendFrame(
+        TunnelFrame.data(
+          sessionId: harness.clientConfig.sessionId,
+          direction: Direction.c2r,
+          streamId: 1,
+          sequenceNumber: i,
+          payload: [i],
+        ),
+      );
+      await harness.chunkTransport.flush();
+    }
+    expect(harness.transport.sent.map((file) => file.sequenceNumber), [
+      1,
+      2,
+      3,
+    ]);
+
+    await harness.addRemoteV4AckOnly(
+      uploadSequence: 1,
+      ackNumber: 1,
+      sackRanges: const [AckRange(start: 3, end: 3)],
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+
+    expect(harness.transport.sent, hasLength(4));
+    expect(harness.transport.sent.last.sequenceNumber, 2);
+  });
+
   test('chunk transport processes ack frames in held chunks', () async {
     final harness = await _ChunkHarness.create(
       'btun_reorder_ack_test_',
@@ -1230,7 +1499,7 @@ void main() {
     await harness.addRemoteChunk(3, payload: [3], ackNumber: ackedSequence);
     await Future<void>.delayed(const Duration(milliseconds: 80));
 
-    expect(harness.transport.sent, hasLength(1));
+    expect(harness.transport.sent, hasLength(2));
   });
 
   test(
@@ -1316,7 +1585,7 @@ void main() {
     await harness.addRemoteChunk(3, payload: [3]);
     await done.future.timeout(const Duration(seconds: 1));
 
-    expect(harness.transport.sent, isEmpty);
+    expect(harness.transport.sent, hasLength(1));
   });
 
   test(
@@ -1565,6 +1834,108 @@ void main() {
     await transport.close();
   });
 
+  test('saved messages quarantines existing tunnel files on start', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'btun_startup_quarantine_test_',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    const stale = BaleMessage(
+      chat: BalePeer.private(42),
+      senderId: 42,
+      messageId: 7,
+      date: 1,
+      document: BaleFileDetails(
+        fileId: 1,
+        accessHash: 2,
+        name: 'btun_testsession_r2c_00000001.bin',
+        size: 5,
+        mimeType: 'application/octet-stream',
+      ),
+    );
+    final client = _FakeBaleClient(
+      downloadBytes: [1, 2, 3, 4, 5],
+      loadHistoryMessages: const [stale],
+    );
+    final transport = BaleSavedMessagesTransport(
+      client: client,
+      sessionId: 'testsession',
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      pollInterval: const Duration(days: 1),
+      maxPollInterval: const Duration(days: 2),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      uploadMinInterval: Duration.zero,
+      uploadRateLimitPerMinute: 50,
+      logger: const Logger(),
+    );
+    final emitted = <IncomingTunnelFile>[];
+    final sub = transport.incomingFiles().listen(emitted.add);
+    addTearDown(sub.cancel);
+
+    await transport.start();
+    client.addUpdate(const BaleMessageUpdate(stale));
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    expect(client.loadHistoryCalls, 1);
+    expect(client.downloadCalls, isZero);
+    expect(emitted, isEmpty);
+    await transport.close();
+  });
+
+  test('saved messages poll downloads unprocessed live history', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'btun_poll_live_history_test_',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    const live = BaleMessage(
+      chat: BalePeer.private(42),
+      senderId: 42,
+      messageId: 8,
+      date: 2,
+      document: BaleFileDetails(
+        fileId: 1,
+        accessHash: 2,
+        name: 'btun_testsession_r2c_00000002.bin',
+        size: 3,
+        mimeType: 'application/octet-stream',
+      ),
+    );
+    final client = _FakeBaleClient(
+      downloadBytes: [6, 7, 8],
+      loadHistoryBatches: const [
+        [],
+        [live],
+      ],
+    );
+    final transport = BaleSavedMessagesTransport(
+      client: client,
+      sessionId: 'testsession',
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      pollInterval: const Duration(milliseconds: 10),
+      maxPollInterval: const Duration(milliseconds: 50),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      uploadMinInterval: Duration.zero,
+      uploadRateLimitPerMinute: 50,
+      logger: const Logger(),
+    );
+
+    await transport.start();
+    await expectLater(
+      transport.incomingFiles(),
+      emits(
+        isA<IncomingTunnelFile>().having((file) => file.bytes, 'bytes', [
+          6,
+          7,
+          8,
+        ]),
+      ),
+    );
+    expect(client.loadHistoryCalls, greaterThanOrEqualTo(2));
+    expect(client.downloadCalls, 1);
+    await transport.close();
+  });
+
   test('saved messages upload rate limit fails fast for failover', () async {
     final temp = await Directory.systemTemp.createTemp(
       'btun_upload_failover_test_',
@@ -1645,6 +2016,133 @@ void main() {
     await transport.close();
   });
 
+  test('saved messages replaces pending ack-only uploads', () async {
+    final temp = await Directory.systemTemp.createTemp(
+      'btun_ack_replace_test_',
+    );
+    addTearDown(() => temp.delete(recursive: true));
+    final client = _FakeBaleClient(blockFirstSend: true);
+    final transport = BaleSavedMessagesTransport(
+      client: client,
+      sessionId: 'testsession',
+      sendDirection: Direction.c2r,
+      receiveDirection: Direction.r2c,
+      pollInterval: const Duration(days: 1),
+      maxPollInterval: const Duration(days: 2),
+      stateDb: StateDb.open('${temp.path}/state.json'),
+      uploadMinInterval: Duration.zero,
+      uploadRateLimitPerMinute: 50,
+      logger: const Logger(),
+      maxConcurrentUploads: 1,
+    );
+
+    final active = transport.sendFile(
+      const OutgoingTunnelFile(
+        fileName: 'btun_testsession_c2r_1.btun',
+        bytes: [1],
+        sequenceNumber: 1,
+        direction: Direction.c2r,
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    final firstAck = transport.sendFile(
+      const OutgoingTunnelFile(
+        fileName: 'btun_testsession_c2r_2.btun',
+        bytes: [2],
+        sequenceNumber: 2,
+        direction: Direction.c2r,
+        isAckOnly: true,
+        replaceKey: 'ack',
+      ),
+    );
+    final secondAck = transport.sendFile(
+      const OutgoingTunnelFile(
+        fileName: 'btun_testsession_c2r_3.btun',
+        bytes: [3],
+        sequenceNumber: 3,
+        direction: Direction.c2r,
+        isAckOnly: true,
+        replaceKey: 'ack',
+      ),
+    );
+
+    await expectLater(firstAck, throwsA(isA<BtunUploadSuperseded>()));
+    client.releaseFirstSend();
+    await active;
+    await secondAck;
+
+    expect(client.sentFileNames, [
+      'btun_testsession_c2r_1.btun',
+      'btun_testsession_c2r_3.btun',
+    ]);
+    await transport.close();
+  });
+
+  test(
+    'saved messages sends queued data before stale ack-only uploads',
+    () async {
+      final temp = await Directory.systemTemp.createTemp(
+        'btun_ack_priority_test_',
+      );
+      addTearDown(() => temp.delete(recursive: true));
+      final client = _FakeBaleClient(blockFirstSend: true);
+      final transport = BaleSavedMessagesTransport(
+        client: client,
+        sessionId: 'testsession',
+        sendDirection: Direction.c2r,
+        receiveDirection: Direction.r2c,
+        pollInterval: const Duration(days: 1),
+        maxPollInterval: const Duration(days: 2),
+        stateDb: StateDb.open('${temp.path}/state.json'),
+        uploadMinInterval: Duration.zero,
+        uploadRateLimitPerMinute: 50,
+        logger: const Logger(),
+        maxConcurrentUploads: 1,
+      );
+
+      final active = transport.sendFile(
+        const OutgoingTunnelFile(
+          fileName: 'btun_testsession_c2r_1.btun',
+          bytes: [1],
+          sequenceNumber: 1,
+          direction: Direction.c2r,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      final ack = transport.sendFile(
+        const OutgoingTunnelFile(
+          fileName: 'btun_testsession_c2r_2.btun',
+          bytes: [2],
+          sequenceNumber: 2,
+          direction: Direction.c2r,
+          isAckOnly: true,
+          replaceKey: 'ack',
+        ),
+      );
+      final data = transport.sendFile(
+        const OutgoingTunnelFile(
+          fileName: 'btun_testsession_c2r_3.btun',
+          bytes: [3],
+          sequenceNumber: 3,
+          direction: Direction.c2r,
+        ),
+      );
+
+      client.releaseFirstSend();
+      await active;
+      await data;
+      await ack;
+
+      expect(client.sentFileNames, [
+        'btun_testsession_c2r_1.btun',
+        'btun_testsession_c2r_3.btun',
+        'btun_testsession_c2r_2.btun',
+      ]);
+      await transport.close();
+    },
+  );
+
   test('saved messages transport does not poll immediately on start', () async {
     final temp = await Directory.systemTemp.createTemp('btun_idle_poll_test_');
     addTearDown(() => temp.delete(recursive: true));
@@ -1667,7 +2165,7 @@ void main() {
     await transport.start();
     await Future<void>.delayed(const Duration(milliseconds: 30));
 
-    expect(client.loadHistoryCalls, isZero);
+    expect(client.loadHistoryCalls, 1);
     await transport.close();
   });
 
@@ -1905,15 +2403,27 @@ class _FakeBaleClient extends BaleClient {
   _FakeBaleClient({
     this.sendError,
     this.downloadBytes = const [],
+    this.loadHistoryMessages = const [],
+    List<List<BaleMessage>> loadHistoryBatches = const [],
     List<Object> loadHistoryErrors = const [],
-  }) : _loadHistoryErrors = List<Object>.of(loadHistoryErrors);
+    bool blockFirstSend = false,
+  }) : _loadHistoryErrors = List<Object>.of(loadHistoryErrors),
+       _loadHistoryBatches = [
+         for (final batch in loadHistoryBatches) List<BaleMessage>.of(batch),
+       ],
+       _firstSendGate = blockFirstSend ? Completer<void>() : null;
 
   final sentAt = <DateTime>[];
+  final sentFileNames = <String>[];
   final _updates = StreamController<BaleUpdate>.broadcast();
   final Object? sendError;
   final List<int> downloadBytes;
+  final List<BaleMessage> loadHistoryMessages;
+  final List<List<BaleMessage>> _loadHistoryBatches;
   final List<Object> _loadHistoryErrors;
+  final Completer<void>? _firstSendGate;
   var loadHistoryCalls = 0;
+  var downloadCalls = 0;
 
   @override
   BaleSession? get session =>
@@ -1931,7 +2441,10 @@ class _FakeBaleClient extends BaleClient {
   }) async {
     loadHistoryCalls += 1;
     if (_loadHistoryErrors.isNotEmpty) throw _loadHistoryErrors.removeAt(0);
-    return const [];
+    if (_loadHistoryBatches.isNotEmpty) {
+      return _loadHistoryBatches.removeAt(0);
+    }
+    return loadHistoryMessages;
   }
 
   @override
@@ -1943,6 +2456,11 @@ class _FakeBaleClient extends BaleClient {
     void Function(int sent, int total)? onProgress,
   }) async {
     sentAt.add(DateTime.now());
+    sentFileNames.add(file.name);
+    final firstSendGate = _firstSendGate;
+    if (firstSendGate != null && sentAt.length == 1) {
+      await firstSendGate.future;
+    }
     final error = sendError;
     if (error != null) throw error;
     return BaleMessage(
@@ -1959,11 +2477,19 @@ class _FakeBaleClient extends BaleClient {
     required int accessHash,
     void Function(List<int> chunk)? onChunk,
   }) async {
+    downloadCalls += 1;
     return downloadBytes;
   }
 
   void addUpdate(BaleUpdate update) {
     _updates.add(update);
+  }
+
+  void releaseFirstSend() {
+    final firstSendGate = _firstSendGate;
+    if (firstSendGate != null && !firstSendGate.isCompleted) {
+      firstSendGate.complete();
+    }
   }
 }
 
@@ -2096,6 +2622,47 @@ class _ChunkHarness {
     );
   }
 
+  Future<void> addRemoteAckOnly(
+    int sequenceNumber, {
+    required int ackNumber,
+  }) async {
+    transport.addIncoming(
+      await remoteAckFile(sequenceNumber, ackNumber: ackNumber),
+    );
+  }
+
+  Future<void> addRemoteV4Chunk({
+    required int uploadSequence,
+    required int reliableSequence,
+    required List<int> payload,
+    int? ackNumber,
+    List<AckRange> sackRanges = const <AckRange>[],
+  }) async {
+    transport.addIncoming(
+      await remoteV4File(
+        uploadSequence: uploadSequence,
+        reliableSequence: reliableSequence,
+        payload: payload,
+        ackNumber: ackNumber,
+        sackRanges: sackRanges,
+      ),
+    );
+  }
+
+  Future<void> addRemoteV4AckOnly({
+    required int uploadSequence,
+    required int ackNumber,
+    List<AckRange> sackRanges = const <AckRange>[],
+  }) async {
+    transport.addIncoming(
+      await remoteV4AckFile(
+        uploadSequence: uploadSequence,
+        ackNumber: ackNumber,
+        sackRanges: sackRanges,
+      ),
+    );
+  }
+
   Future<IncomingTunnelFile> remoteFile(
     int sequenceNumber, {
     required List<int> payload,
@@ -2118,10 +2685,12 @@ class _ChunkHarness {
     ];
     final incoming = await relayCrypto.encrypt(
       PlainChunk(
-        version: 1,
+        version: 4,
         sessionId: clientConfig.sessionId,
         direction: Direction.r2c,
         sequenceNumber: sequenceNumber,
+        chunkEpoch: 'remote-test-epoch',
+        reliableSequenceNumber: sequenceNumber,
         frames: frames,
       ),
     );
@@ -2132,6 +2701,122 @@ class _ChunkHarness {
         clientConfig.sessionId,
         Direction.r2c,
         sequenceNumber,
+      ),
+      bytes: incoming.encode(),
+    );
+  }
+
+  Future<IncomingTunnelFile> remoteV4File({
+    required int uploadSequence,
+    required int reliableSequence,
+    required List<int> payload,
+    int? ackNumber,
+    List<AckRange> sackRanges = const <AckRange>[],
+  }) async {
+    final frames = <TunnelFrame>[
+      if (ackNumber != null)
+        TunnelFrame.ack(
+          sessionId: clientConfig.sessionId,
+          direction: Direction.r2c,
+          ackNumber: ackNumber,
+          sackRanges: sackRanges,
+        ),
+      TunnelFrame.data(
+        sessionId: clientConfig.sessionId,
+        direction: Direction.r2c,
+        streamId: 1,
+        sequenceNumber: reliableSequence,
+        payload: payload,
+      ),
+    ];
+    final incoming = await relayCrypto.encrypt(
+      PlainChunk(
+        version: 4,
+        sessionId: clientConfig.sessionId,
+        direction: Direction.r2c,
+        sequenceNumber: uploadSequence,
+        chunkEpoch: 'remote-test-epoch',
+        reliableSequenceNumber: reliableSequence,
+        frames: frames,
+      ),
+    );
+    return IncomingTunnelFile(
+      messageId:
+          'remote-v4-$uploadSequence-${DateTime.now().microsecondsSinceEpoch}',
+      fileName: btunFileName(
+        clientConfig.sessionId,
+        Direction.r2c,
+        uploadSequence,
+      ),
+      bytes: incoming.encode(),
+    );
+  }
+
+  Future<IncomingTunnelFile> remoteAckFile(
+    int sequenceNumber, {
+    required int ackNumber,
+  }) async {
+    final incoming = await relayCrypto.encrypt(
+      PlainChunk(
+        version: 4,
+        sessionId: clientConfig.sessionId,
+        direction: Direction.r2c,
+        sequenceNumber: sequenceNumber,
+        chunkEpoch: 'remote-test-epoch',
+        reliableSequenceNumber: 0,
+        ackOnly: true,
+        frames: [
+          TunnelFrame.ack(
+            sessionId: clientConfig.sessionId,
+            direction: Direction.r2c,
+            ackNumber: ackNumber,
+          ),
+        ],
+      ),
+    );
+    return IncomingTunnelFile(
+      messageId:
+          'remote-ack-$sequenceNumber-${DateTime.now().microsecondsSinceEpoch}',
+      fileName: btunFileName(
+        clientConfig.sessionId,
+        Direction.r2c,
+        sequenceNumber,
+      ),
+      bytes: incoming.encode(),
+    );
+  }
+
+  Future<IncomingTunnelFile> remoteV4AckFile({
+    required int uploadSequence,
+    required int ackNumber,
+    List<AckRange> sackRanges = const <AckRange>[],
+  }) async {
+    final incoming = await relayCrypto.encrypt(
+      PlainChunk(
+        version: 4,
+        sessionId: clientConfig.sessionId,
+        direction: Direction.r2c,
+        sequenceNumber: uploadSequence,
+        chunkEpoch: 'remote-test-epoch',
+        reliableSequenceNumber: 0,
+        ackOnly: true,
+        frames: [
+          TunnelFrame.ack(
+            sessionId: clientConfig.sessionId,
+            direction: Direction.r2c,
+            ackNumber: ackNumber,
+            sackRanges: sackRanges,
+          ),
+        ],
+      ),
+    );
+    return IncomingTunnelFile(
+      messageId:
+          'remote-v4-ack-$uploadSequence-${DateTime.now().microsecondsSinceEpoch}',
+      fileName: btunFileName(
+        clientConfig.sessionId,
+        Direction.r2c,
+        uploadSequence,
       ),
       bytes: incoming.encode(),
     );

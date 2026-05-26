@@ -52,6 +52,7 @@ class TunnelFrame {
     this.port,
     this.payload = const <int>[],
     this.message,
+    this.sackRanges = const <AckRange>[],
   });
 
   final int version;
@@ -65,6 +66,7 @@ class TunnelFrame {
   final int? port;
   final List<int> payload;
   final String? message;
+  final List<AckRange> sackRanges;
 
   factory TunnelFrame.open({
     required String sessionId,
@@ -106,6 +108,7 @@ class TunnelFrame {
     required String sessionId,
     required Direction direction,
     required int ackNumber,
+    List<AckRange> sackRanges = const <AckRange>[],
   }) => TunnelFrame(
     version: 1,
     sessionId: sessionId,
@@ -114,6 +117,7 @@ class TunnelFrame {
     sequenceNumber: 0,
     ackNumber: ackNumber,
     type: FrameType.ack,
+    sackRanges: sackRanges,
   );
 
   factory TunnelFrame.close({
@@ -161,10 +165,12 @@ class TunnelFrame {
     'payload': base64Encode(payload),
     'payload_length': payload.length,
     'message': message,
+    'sack_ranges': [for (final range in sackRanges) range.toJson()],
   };
 
   static TunnelFrame fromJson(Map<String, Object?> json) {
     final payloadText = json['payload'] as String? ?? '';
+    final sackRangesJson = json['sack_ranges'];
     return TunnelFrame(
       version: json['version'] as int? ?? 1,
       sessionId: json['session_id'] as String,
@@ -177,8 +183,25 @@ class TunnelFrame {
       port: json['port'] as int?,
       payload: payloadText.isEmpty ? const [] : base64Decode(payloadText),
       message: json['message'] as String?,
+      sackRanges: [
+        if (sackRangesJson is List)
+          for (final item in sackRangesJson)
+            AckRange.fromJson((item as Map).cast<String, Object?>()),
+      ],
     );
   }
+}
+
+class AckRange {
+  const AckRange({required this.start, required this.end});
+
+  final int start;
+  final int end;
+
+  Map<String, Object?> toJson() => {'start': start, 'end': end};
+
+  static AckRange fromJson(Map<String, Object?> json) =>
+      AckRange(start: json['start'] as int, end: json['end'] as int);
 }
 
 /// A batch of frames before compression and encryption.
@@ -189,6 +212,9 @@ class PlainChunk {
     required this.direction,
     required this.sequenceNumber,
     required this.frames,
+    this.chunkEpoch,
+    this.reliableSequenceNumber = 0,
+    this.ackOnly = false,
   });
 
   final int version;
@@ -196,17 +222,28 @@ class PlainChunk {
   final Direction direction;
   final int sequenceNumber;
   final List<TunnelFrame> frames;
+  final String? chunkEpoch;
+  final int reliableSequenceNumber;
+  final bool ackOnly;
 
   Uint8List encode() {
-    // The binary format keeps tunnel files compact. JSON decoding remains below
-    // for compatibility with older files written before the binary format.
+    if (version != 4) {
+      throw FormatException('unsupported chunk version $version');
+    }
+    final chunkEpoch = this.chunkEpoch;
+    if (chunkEpoch == null || chunkEpoch.isEmpty) {
+      throw const FormatException('v4 chunks require a chunk epoch');
+    }
     final writer = _BinaryWriter()
       ..writeUint32(_plainChunkMagic)
       ..writeUint8(version)
       ..writeUint8(_directionId(direction))
       ..writeString(sessionId)
       ..writeUint64(sequenceNumber)
-      ..writeUint32(frames.length);
+      ..writeString(chunkEpoch)
+      ..writeUint64(reliableSequenceNumber)
+      ..writeUint8(ackOnly ? 1 : 0);
+    writer.writeUint32(frames.length);
     for (final frame in frames) {
       writer
         ..writeUint8(frame.version)
@@ -219,6 +256,12 @@ class PlainChunk {
         ..writeInt32(frame.port ?? -1)
         ..writeNullableString(frame.message)
         ..writeBytes(frame.payload);
+      writer.writeUint32(frame.sackRanges.length);
+      for (final range in frame.sackRanges) {
+        writer
+          ..writeUint64(range.start)
+          ..writeUint64(range.end);
+      }
     }
     return writer.takeBytes();
   }
@@ -227,33 +270,25 @@ class PlainChunk {
     if (_hasMagic(bytes, _plainChunkMagic)) {
       return _decodeBinary(bytes);
     }
-    final json = jsonDecode(utf8.decode(bytes));
-    if (json is! Map<String, Object?>) {
-      throw const FormatException('chunk must be a JSON object');
-    }
-    final framesJson = json['frames'];
-    if (framesJson is! List) {
-      throw const FormatException('frames must be a list');
-    }
-    return PlainChunk(
-      version: json['version'] as int? ?? 1,
-      sessionId: json['session_id'] as String,
-      direction: Direction.parse(json['direction'] as String),
-      sequenceNumber: json['sequence_number'] as int,
-      frames: [
-        for (final item in framesJson)
-          TunnelFrame.fromJson((item as Map).cast<String, Object?>()),
-      ],
-    );
+    throw const FormatException('unsupported legacy JSON chunk');
   }
 
   static PlainChunk _decodeBinary(List<int> bytes) {
     final reader = _BinaryReader(bytes);
     reader.expectUint32(_plainChunkMagic);
     final version = reader.readUint8();
+    if (version != 4) {
+      throw FormatException('unsupported chunk version $version');
+    }
     final direction = _directionFromId(reader.readUint8());
     final sessionId = reader.readString();
     final sequenceNumber = reader.readUint64();
+    final chunkEpoch = reader.readString();
+    if (chunkEpoch.isEmpty) {
+      throw const FormatException('v4 chunks require a chunk epoch');
+    }
+    final reliableSequenceNumber = reader.readUint64();
+    final ackOnly = reader.readUint8() != 0;
     final frameCount = reader.readUint32();
     final frames = <TunnelFrame>[];
     for (var i = 0; i < frameCount; i++) {
@@ -267,6 +302,13 @@ class PlainChunk {
       final port = reader.readInt32();
       final message = reader.readNullableString();
       final payload = reader.readBytes();
+      final sackRangeCount = reader.readUint32();
+      final sackRanges = <AckRange>[];
+      for (var j = 0; j < sackRangeCount; j++) {
+        sackRanges.add(
+          AckRange(start: reader.readUint64(), end: reader.readUint64()),
+        );
+      }
       frames.add(
         TunnelFrame(
           version: frameVersion,
@@ -280,6 +322,7 @@ class PlainChunk {
           port: port < 0 ? null : port,
           payload: payload,
           message: message,
+          sackRanges: sackRanges,
         ),
       );
     }
@@ -289,6 +332,9 @@ class PlainChunk {
       sessionId: sessionId,
       direction: direction,
       sequenceNumber: sequenceNumber,
+      chunkEpoch: chunkEpoch,
+      reliableSequenceNumber: reliableSequenceNumber,
+      ackOnly: ackOnly,
       frames: frames,
     );
   }
@@ -303,6 +349,7 @@ class EncryptedChunkMetadata {
     required this.sequenceNumber,
     required this.nonce,
     this.compressed = false,
+    this.chunkEpoch,
   });
 
   final int version;
@@ -311,18 +358,21 @@ class EncryptedChunkMetadata {
   final int sequenceNumber;
   final List<int> nonce;
   final bool compressed;
+  final String? chunkEpoch;
 
   List<int> aad() {
     // Metadata is not secret, but it must be authenticated so chunks cannot be
     // moved across sessions, directions, or sequence numbers.
-    if (version <= 1 && !compressed) {
-      return utf8.encode(
-        'btun|$version|$sessionId|${direction.name}|$sequenceNumber',
-      );
+    if (version != 4) {
+      throw FormatException('unsupported chunk version $version');
+    }
+    final chunkEpoch = this.chunkEpoch;
+    if (chunkEpoch == null || chunkEpoch.isEmpty) {
+      throw const FormatException('v4 chunks require a chunk epoch');
     }
     return utf8.encode(
       'btun|$version|$sessionId|${direction.name}|$sequenceNumber|'
-      '${compressed ? 1 : 0}',
+      '${compressed ? 1 : 0}|$chunkEpoch',
     );
   }
 
@@ -335,21 +385,11 @@ class EncryptedChunkMetadata {
     'message_type': 'chunk',
     'nonce': base64Encode(nonce),
     'compressed': compressed,
+    'chunk_epoch': chunkEpoch,
   };
 
   static EncryptedChunkMetadata fromJson(Map<String, Object?> json) {
-    if (json['magic'] != 'btun') throw const FormatException('not a btun file');
-    if (json['message_type'] != 'chunk') {
-      throw const FormatException('not a chunk file');
-    }
-    return EncryptedChunkMetadata(
-      version: json['version'] as int? ?? 1,
-      sessionId: json['session_id'] as String,
-      direction: Direction.parse(json['direction'] as String),
-      sequenceNumber: json['sequence_number'] as int,
-      nonce: base64Decode(json['nonce'] as String),
-      compressed: json['compressed'] as bool? ?? false,
-    );
+    throw const FormatException('unsupported legacy JSON encrypted chunk');
   }
 }
 
@@ -366,13 +406,22 @@ class EncryptedChunkFile {
   final List<int> mac;
 
   Uint8List encode() {
-    return (_BinaryWriter()
-          ..writeUint32(_encryptedChunkMagic)
-          ..writeUint8(metadata.version)
-          ..writeUint8(_directionId(metadata.direction))
-          ..writeUint8(metadata.compressed ? 1 : 0)
-          ..writeString(metadata.sessionId)
-          ..writeUint64(metadata.sequenceNumber)
+    if (metadata.version != 4) {
+      throw FormatException('unsupported chunk version ${metadata.version}');
+    }
+    final chunkEpoch = metadata.chunkEpoch;
+    if (chunkEpoch == null || chunkEpoch.isEmpty) {
+      throw const FormatException('v4 chunks require a chunk epoch');
+    }
+    final writer = _BinaryWriter()
+      ..writeUint32(_encryptedChunkMagic)
+      ..writeUint8(metadata.version)
+      ..writeUint8(_directionId(metadata.direction))
+      ..writeUint8(metadata.compressed ? 1 : 0)
+      ..writeString(metadata.sessionId)
+      ..writeUint64(metadata.sequenceNumber)
+      ..writeString(chunkEpoch);
+    return (writer
           ..writeBytes(metadata.nonce)
           ..writeBytes(mac)
           ..writeBytes(cipherText))
@@ -383,27 +432,24 @@ class EncryptedChunkFile {
     if (_hasMagic(bytes, _encryptedChunkMagic)) {
       return _decodeBinary(bytes);
     }
-    final json = jsonDecode(utf8.decode(bytes));
-    if (json is! Map<String, Object?>) {
-      throw const FormatException('encrypted file must be JSON');
-    }
-    return EncryptedChunkFile(
-      metadata: EncryptedChunkMetadata.fromJson(
-        (json['metadata'] as Map).cast<String, Object?>(),
-      ),
-      cipherText: base64Decode(json['ciphertext'] as String),
-      mac: base64Decode(json['mac'] as String),
-    );
+    throw const FormatException('unsupported legacy JSON encrypted chunk');
   }
 
   static EncryptedChunkFile _decodeBinary(List<int> bytes) {
     final reader = _BinaryReader(bytes);
     reader.expectUint32(_encryptedChunkMagic);
     final version = reader.readUint8();
+    if (version != 4) {
+      throw FormatException('unsupported chunk version $version');
+    }
     final direction = _directionFromId(reader.readUint8());
     final compressed = reader.readUint8() != 0;
     final sessionId = reader.readString();
     final sequenceNumber = reader.readUint64();
+    final chunkEpoch = reader.readString();
+    if (chunkEpoch.isEmpty) {
+      throw const FormatException('v4 chunks require a chunk epoch');
+    }
     final nonce = reader.readBytes();
     final mac = reader.readBytes();
     final cipherText = reader.readBytes();
@@ -416,6 +462,7 @@ class EncryptedChunkFile {
         sequenceNumber: sequenceNumber,
         nonce: nonce,
         compressed: compressed,
+        chunkEpoch: chunkEpoch,
       ),
       cipherText: cipherText,
       mac: mac,

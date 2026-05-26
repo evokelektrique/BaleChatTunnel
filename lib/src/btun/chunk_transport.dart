@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'crypto.dart';
 import 'logger.dart';
@@ -84,17 +85,24 @@ class ChunkTransport {
   final _retryCache = <int, _RetryChunk>{};
   var _retryCacheBytes = 0;
   var _queuedBytes = 0;
-  final _pendingAcks = <int>{};
   final _reorderBuffer = <int, _BufferedChunk>{};
   final _deliveredReceivedSequences = <int>{};
   var _reorderBufferBytes = 0;
-  var _nextSequence = DateTime.now().millisecondsSinceEpoch;
+  final String chunkEpoch = _newChunkEpoch();
+  var _nextUploadSequence = 1;
+  var _nextReliableSequence = 1;
+  var _nextFrameSequence = 1;
   int? _nextReceiveSequence;
+  String? _receiveChunkEpoch;
   var _closed = false;
   String? _closedReason;
   var _retryInProgress = false;
   DateTime? _retryNotBefore;
   DateTime? _receiveGapSince;
+  _AckSnapshot? _lastSentAckSnapshot;
+  DateTime? _lastSentAckAt;
+  var _pendingAckDirty = false;
+  var _ackElicitingSinceLastAck = 0;
 
   Stream<TunnelFrame> get frames => _frames.stream;
 
@@ -167,56 +175,74 @@ class ChunkTransport {
     final frames = <TunnelFrame>[..._queuedFrames];
     _queuedFrames.clear();
     _queuedBytes = 0;
-    final ackNumbers = _pendingAcks.toList()..sort();
-    if (ackNumbers.isNotEmpty) {
+    final ackFrame = _buildAckFrame();
+    if (ackFrame != null) {
       // ACKs are piggybacked onto outgoing chunks when possible to reduce the
       // number of Bale files created for pure control traffic.
-      for (final ackNumber in ackNumbers) {
-        frames.add(
-          TunnelFrame.ack(
-            sessionId: sessionId,
-            direction: sendDirection,
-            ackNumber: ackNumber,
-          ),
-        );
-      }
-      _pendingAcks.clear();
-      _ackTimer?.cancel();
-      _ackTimer = null;
+      frames.add(ackFrame);
     }
     if (frames.isEmpty) return;
-    final sequence = _nextSequence++;
-    _logChunkSummary(sequence, frames, _targetForFrames(frames));
+    final ackOnly = frames.every((frame) => frame.type == FrameType.ack);
+    final uploadSequence = _nextUploadSequence++;
+    final reliableSequence = ackOnly ? 0 : _nextReliableSequence++;
+    _logChunkSummary(
+      uploadSequence,
+      reliableSequence,
+      ackOnly,
+      frames,
+      _targetForFrames(frames),
+    );
     final chunk = PlainChunk(
-      version: 2,
+      version: 4,
       sessionId: sessionId,
       direction: sendDirection,
-      sequenceNumber: sequence,
+      sequenceNumber: uploadSequence,
+      chunkEpoch: chunkEpoch,
+      reliableSequenceNumber: reliableSequence,
+      ackOnly: ackOnly,
       frames: frames,
     );
     final encrypted = await crypto.encrypt(chunk);
     final bytes = encrypted.encode();
-    final fileName = btunFileName(sessionId, sendDirection, sequence);
-    final ackOnly = frames.every((frame) => frame.type == FrameType.ack);
+    final fileName = btunFileName(sessionId, sendDirection, uploadSequence);
     // ACK-only chunks are not retried because they acknowledge retry state and
     // do not need their own acknowledgement cycle.
-    if (!ackOnly) _cacheRetry(sequence, fileName, bytes);
+    if (!ackOnly) {
+      _cacheRetry(
+        reliableSequence,
+        uploadSequence: uploadSequence,
+        fileName: fileName,
+        bytes: bytes,
+      );
+    }
     try {
-      await _sendFile(sequence, fileName, bytes, trackAck: !ackOnly);
+      await _sendFile(
+        uploadSequence,
+        fileName,
+        bytes,
+        reliableSequence: ackOnly ? null : reliableSequence,
+        isAckOnly: ackOnly,
+      );
+      if (ackFrame != null) {
+        _markAckSent(_AckSnapshot(ackFrame.ackNumber, ackFrame.sackRanges));
+      }
+    } on BtunUploadSuperseded {
+      // A newer ACK snapshot replaced this upload before it reached Bale.
     } on Object catch (error) {
-      logger.warn('initial send failed for chunk $sequence: $error');
+      logger.warn('initial send failed for chunk $uploadSequence: $error');
     }
   }
 
   Future<void> sendFrame(TunnelFrame frame) => sendFrames([frame]);
 
-  int allocateSequence() => _nextSequence++;
+  int allocateSequence() => _nextFrameSequence++;
 
   Future<void> _sendFile(
     int sequence,
     String fileName,
     List<int> bytes, {
-    required bool trackAck,
+    required int? reliableSequence,
+    required bool isAckOnly,
   }) async {
     await transport.sendFile(
       OutgoingTunnelFile(
@@ -224,10 +250,12 @@ class ChunkTransport {
         bytes: bytes,
         sequenceNumber: sequence,
         direction: sendDirection,
+        isAckOnly: isAckOnly,
+        replaceKey: isAckOnly ? '$sessionId:${sendDirection.name}:ack' : null,
       ),
     );
-    if (trackAck) {
-      _retryCache[sequence]?.markSent();
+    if (reliableSequence != null) {
+      _retryCache[reliableSequence]?.markSent();
     }
   }
 
@@ -238,36 +266,51 @@ class ChunkTransport {
       if (meta.sessionId != sessionId || meta.direction != receiveDirection) {
         return;
       }
+      if (meta.version != 4) return;
+      if (!_matchesAcceptedReceiveEpoch(meta.version, meta.chunkEpoch)) return;
       final chunk = await crypto.decrypt(encrypted);
       if (chunk.sessionId != sessionId || chunk.direction != receiveDirection) {
         return;
       }
-      final persistedDuplicate = stateDb.hasReceivedChunk(chunk.sequenceNumber);
-      final deliveredDuplicate =
-          persistedDuplicate ||
-          _deliveredReceivedSequences.contains(chunk.sequenceNumber);
-      final bufferedDuplicate = _reorderBuffer.containsKey(
-        chunk.sequenceNumber,
+      if (!_acceptReceiveEpoch(chunk.version, chunk.chunkEpoch)) return;
+      final ackOnly = chunk.ackOnly;
+      final receiveSequence = _receiveSequenceFor(chunk);
+      final deliveredDuplicate = _deliveredReceivedSequences.contains(
+        receiveSequence,
       );
+      final bufferedDuplicate = _reorderBuffer.containsKey(receiveSequence);
       // Duplicate chunks can arrive from retries or repeated Bale history
       // polling. They still carry ACKs, but data frames are delivered once.
       var hasDataOrControl = false;
       for (final frame in chunk.frames) {
         if (frame.type == FrameType.ack) {
-          _markRetryAcked(frame.ackNumber);
+          _markRetryAcked(frame.ackNumber, frame.sackRanges);
         } else {
           hasDataOrControl = true;
         }
       }
-      if (hasDataOrControl) _scheduleAck(chunk.sequenceNumber);
+      if (ackOnly) {
+        logger.info(
+          'received chunk file_seq=${chunk.sequenceNumber} '
+          'rel_seq=${chunk.reliableSequenceNumber} ack_only=true '
+          'expected=${_nextReceiveSequence?.toString() ?? 'baseline'} '
+          'buffered=${_reorderBuffer.length}',
+        );
+        return;
+      }
       final expected = _nextReceiveSequence?.toString() ?? 'baseline';
       logger.info(
-        'received chunk seq=${chunk.sequenceNumber} '
-        'expected=$expected buffered=${_reorderBuffer.length} '
+        'received chunk file_seq=${chunk.sequenceNumber} '
+        'rel_seq=$receiveSequence ack_only=false expected=$expected '
+        'buffered=${_reorderBuffer.length} '
         'duplicate=${deliveredDuplicate || bufferedDuplicate}',
       );
-      if (!hasDataOrControl || deliveredDuplicate || bufferedDuplicate) return;
+      if (!hasDataOrControl) return;
+      if (bufferedDuplicate) _scheduleAckRefreshForBufferedDuplicate();
+      if (deliveredDuplicate || bufferedDuplicate) return;
+      final before = _currentAckSnapshot();
       _bufferOrDeliver(chunk);
+      _scheduleAckForStateChange(before);
     } on Object catch (error) {
       logger.warn(
         'ignored corrupted or invalid tunnel file ${incoming.fileName}: $error',
@@ -276,9 +319,10 @@ class ChunkTransport {
   }
 
   void _bufferOrDeliver(PlainChunk chunk) {
+    final receiveSequence = _receiveSequenceFor(chunk);
     final expected = _nextReceiveSequence;
     if (expected == null) {
-      if (chunk.sequenceNumber == 1) {
+      if (receiveSequence == 1) {
         _establishReceiveBaseline(1, reason: 'first chunk');
         _deliverChunk(chunk);
         _drainReorderBuffer();
@@ -289,22 +333,23 @@ class ChunkTransport {
       _enforceReorderLimit();
       return;
     }
-    if (chunk.sequenceNumber < expected) {
+    if (receiveSequence < expected) {
       logger.info(
-        'skipping already delivered chunk seq=${chunk.sequenceNumber} '
-        'expected=$expected',
+        'skipping already delivered chunk file_seq=${chunk.sequenceNumber} '
+        'rel_seq=$receiveSequence expected=$expected',
       );
       return;
     }
-    if (chunk.sequenceNumber == expected) {
+    if (receiveSequence == expected) {
       _deliverChunk(chunk);
       _drainReorderBuffer();
       return;
     }
     _bufferChunk(chunk);
     logger.warn(
-      'holding out-of-order chunk seq=${chunk.sequenceNumber} '
-      'expected=$expected buffered=${_reorderBuffer.length} '
+      'holding out-of-order chunk file_seq=${chunk.sequenceNumber} '
+      'rel_seq=$receiveSequence expected=$expected '
+      'buffered=${_reorderBuffer.length} '
       'bytes=$_reorderBufferBytes gap_age_ms=${_gapAgeMs()}',
     );
     _scheduleReceiveGapTimeout();
@@ -313,7 +358,7 @@ class ChunkTransport {
 
   void _bufferChunk(PlainChunk chunk) {
     final encodedBytes = _estimateChunkBytes(chunk);
-    _reorderBuffer[chunk.sequenceNumber] = _BufferedChunk(
+    _reorderBuffer[_receiveSequenceFor(chunk)] = _BufferedChunk(
       chunk: chunk,
       estimatedBytes: encodedBytes,
       receivedAt: DateTime.now(),
@@ -379,12 +424,12 @@ class ChunkTransport {
   }
 
   void _deliverChunk(PlainChunk chunk) {
+    final receiveSequence = _receiveSequenceFor(chunk);
     for (final frame in chunk.frames) {
       if (frame.type != FrameType.ack) _frames.add(frame);
     }
-    _deliveredReceivedSequences.add(chunk.sequenceNumber);
-    stateDb.markReceivedChunk(chunk.sequenceNumber);
-    _nextReceiveSequence = chunk.sequenceNumber + 1;
+    _deliveredReceivedSequences.add(receiveSequence);
+    _nextReceiveSequence = receiveSequence + 1;
   }
 
   void _enforceReorderLimit() {
@@ -408,7 +453,8 @@ class ChunkTransport {
     if (_closed || _nextReceiveSequence == null || _receiveGapTimer != null) {
       return;
     }
-    final timeout = _effectiveReceiveGapTimeout;
+    final timeout = receiveGapTimeout;
+    if (timeout == null) return;
     if (timeout <= Duration.zero) {
       _closeForReceiveGap();
       return;
@@ -417,12 +463,6 @@ class ChunkTransport {
       _receiveGapTimer = null;
       _closeForReceiveGap();
     });
-  }
-
-  Duration get _effectiveReceiveGapTimeout {
-    final configured = receiveGapTimeout;
-    if (configured != null) return configured;
-    return retryTimeout * 2;
   }
 
   void _closeForReceiveGap() {
@@ -452,13 +492,23 @@ class ChunkTransport {
     return DateTime.now().difference(since).inMilliseconds;
   }
 
-  void _scheduleAck(int sequenceNumber) {
-    _pendingAcks.add(sequenceNumber);
+  void _scheduleAckForStateChange(_AckSnapshot? before) {
+    final snapshot = _currentAckSnapshot();
+    if (snapshot == null || snapshot == before) return;
+    _pendingAckDirty = true;
+    _ackElicitingSinceLastAck += 1;
+    final sackChanged = before == null
+        ? snapshot.sackRanges.isNotEmpty
+        : !_sameAckRanges(before.sackRanges, snapshot.sackRanges);
+    final urgent =
+        sackChanged ||
+        snapshot.sackRanges.isNotEmpty ||
+        (before != null && before.sackRanges.isNotEmpty);
     if (_queuedFrames.isNotEmpty) {
       _scheduleFlush(_shorterDelay(flushDelay, ackDelay));
       return;
     }
-    if (ackDelay == Duration.zero) {
+    if (urgent || ackDelay == Duration.zero || _ackElicitingSinceLastAck >= 2) {
       unawaited(flush());
       return;
     }
@@ -466,6 +516,18 @@ class ChunkTransport {
       _ackTimer = null;
       unawaited(flush());
     });
+  }
+
+  void _scheduleAckRefreshForBufferedDuplicate() {
+    final snapshot = _currentAckSnapshot();
+    if (snapshot == null || snapshot.sackRanges.isEmpty) return;
+    final sentAt = _lastSentAckAt;
+    if (sentAt != null &&
+        DateTime.now().difference(sentAt) < _ackRefreshInterval) {
+      return;
+    }
+    _pendingAckDirty = true;
+    unawaited(flush());
   }
 
   Future<void> _retryDue() async {
@@ -492,7 +554,11 @@ class ChunkTransport {
                   record.lastSentAt == null || record.lastSentAt! < cutoff,
             )
             .toList()
-          ..sort((a, b) => a.sequenceNumber.compareTo(b.sequenceNumber));
+          ..sort((a, b) {
+            final sackCompare = (a.sacked ? 1 : 0).compareTo(b.sacked ? 1 : 0);
+            if (sackCompare != 0) return sackCompare;
+            return a.sequenceNumber.compareTo(b.sequenceNumber);
+          });
     for (final record in retryable.take(maxInFlight)) {
       try {
         record.retryCount += 1;
@@ -500,7 +566,7 @@ class ChunkTransport {
           OutgoingTunnelFile(
             fileName: record.fileName,
             bytes: record.bytes,
-            sequenceNumber: record.sequenceNumber,
+            sequenceNumber: record.uploadSequenceNumber,
             direction: sendDirection,
           ),
         );
@@ -513,10 +579,14 @@ class ChunkTransport {
             _retryNotBefore = retryAfter;
           }
         }
-        logger.warn('retry paused for chunk ${record.sequenceNumber}: $error');
+        logger.warn(
+          'retry paused for chunk rel_seq=${record.sequenceNumber}: $error',
+        );
         break;
       } on Object catch (error) {
-        logger.warn('retry failed for chunk ${record.sequenceNumber}: $error');
+        logger.warn(
+          'retry failed for chunk rel_seq=${record.sequenceNumber}: $error',
+        );
       }
     }
   }
@@ -544,7 +614,6 @@ class ChunkTransport {
     _receiveGapTimer?.cancel();
     _queuedFrames.clear();
     _queuedBytes = 0;
-    _pendingAcks.clear();
     _reorderBuffer.clear();
     _reorderBufferBytes = 0;
     _receiveGapSince = null;
@@ -557,11 +626,17 @@ class ChunkTransport {
     throw ChunkTransportClosedException(_closedReason ?? 'closed');
   }
 
-  void _cacheRetry(int sequence, String fileName, List<int> bytes) {
+  void _cacheRetry(
+    int sequence, {
+    required int uploadSequence,
+    required String fileName,
+    required List<int> bytes,
+  }) {
     final previous = _retryCache.remove(sequence);
     if (previous != null) _retryCacheBytes -= previous.bytes.length;
     _retryCache[sequence] = _RetryChunk(
       sequenceNumber: sequence,
+      uploadSequenceNumber: uploadSequence,
       fileName: fileName,
       bytes: List<int>.unmodifiable(bytes),
     );
@@ -569,9 +644,194 @@ class ChunkTransport {
     _trimRetryCache();
   }
 
-  void _markRetryAcked(int ackNumber) {
-    final removed = _retryCache.remove(ackNumber);
-    if (removed != null) _retryCacheBytes -= removed.bytes.length;
+  TunnelFrame? _buildAckFrame() {
+    final snapshot = _currentAckSnapshot();
+    if (snapshot == null) return null;
+    final lastSent = _lastSentAckSnapshot;
+    final changed = snapshot != lastSent;
+    if (!changed) {
+      final sentAt = _lastSentAckAt;
+      final refreshDue =
+          sentAt == null ||
+          DateTime.now().difference(sentAt) >= _ackRefreshInterval;
+      if (!_pendingAckDirty || !refreshDue) return null;
+    }
+    return TunnelFrame.ack(
+      sessionId: sessionId,
+      direction: sendDirection,
+      ackNumber: snapshot.ackNumber,
+      sackRanges: snapshot.sackRanges,
+    );
+  }
+
+  _AckSnapshot? _currentAckSnapshot() {
+    final ackNumber = (_nextReceiveSequence ?? 1) - 1;
+    if (ackNumber <= 0 && _reorderBuffer.isEmpty) {
+      return null;
+    }
+    return _AckSnapshot(ackNumber < 0 ? 0 : ackNumber, _sackRanges());
+  }
+
+  void _markAckSent(_AckSnapshot snapshot) {
+    _lastSentAckSnapshot = snapshot;
+    _lastSentAckAt = DateTime.now();
+    _pendingAckDirty = false;
+    _ackElicitingSinceLastAck = 0;
+    _ackTimer?.cancel();
+    _ackTimer = null;
+  }
+
+  Duration get _ackRefreshInterval {
+    final delayMs = ackDelay.inMilliseconds * 4;
+    final minimumMs = const Duration(seconds: 5).inMilliseconds;
+    return Duration(milliseconds: delayMs > minimumMs ? delayMs : minimumMs);
+  }
+
+  List<AckRange> _sackRanges() {
+    if (_reorderBuffer.isEmpty) return const <AckRange>[];
+    final keys = _reorderBuffer.keys.toList()..sort();
+    final ranges = <AckRange>[];
+    var start = keys.first;
+    var end = start;
+    for (final key in keys.skip(1)) {
+      if (key == end + 1) {
+        end = key;
+      } else {
+        ranges.add(AckRange(start: start, end: end));
+        start = key;
+        end = key;
+      }
+    }
+    ranges.add(AckRange(start: start, end: end));
+    return ranges.reversed.take(8).toList(growable: false);
+  }
+
+  bool _sameAckRanges(List<AckRange> a, List<AckRange> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i += 1) {
+      if (a[i].start != b[i].start || a[i].end != b[i].end) return false;
+    }
+    return true;
+  }
+
+  bool _acceptReceiveEpoch(int version, String? epoch) {
+    if (version != 4) return false;
+    final chunkEpoch = epoch;
+    if (chunkEpoch == null || chunkEpoch.isEmpty) return false;
+    final accepted = _receiveChunkEpoch;
+    if (accepted == null) {
+      _receiveChunkEpoch = chunkEpoch;
+      return true;
+    }
+    if (accepted == chunkEpoch) return true;
+    logger.info('ignored chunk from stale epoch $chunkEpoch');
+    return false;
+  }
+
+  bool _matchesAcceptedReceiveEpoch(int version, String? epoch) {
+    if (version != 4) return false;
+    final accepted = _receiveChunkEpoch;
+    if (accepted == null) return true;
+    return epoch == accepted;
+  }
+
+  void _markRetryAcked(int ackNumber, List<AckRange> sackRanges) {
+    final acked = _retryCache.keys.where((sequence) => sequence <= ackNumber);
+    for (final sequence in acked.toList()) {
+      final removed = _retryCache.remove(sequence);
+      if (removed != null) _retryCacheBytes -= removed.bytes.length;
+    }
+    for (final range in sackRanges) {
+      for (final record in _retryCache.values) {
+        if (record.sequenceNumber >= range.start &&
+            record.sequenceNumber <= range.end) {
+          record.sacked = true;
+        }
+      }
+    }
+    _scheduleSackGapProbe(ackNumber, sackRanges);
+  }
+
+  void _scheduleSackGapProbe(int ackNumber, List<AckRange> sackRanges) {
+    if (sackRanges.isEmpty) return;
+    final highestSacked = sackRanges
+        .map((range) => range.end)
+        .reduce((a, b) => a > b ? a : b);
+    _RetryChunk? probe;
+    for (final record in _retryCache.values) {
+      if (record.sequenceNumber <= ackNumber ||
+          record.sequenceNumber > highestSacked ||
+          record.sacked) {
+        continue;
+      }
+      if (probe == null || record.sequenceNumber < probe.sequenceNumber) {
+        probe = record;
+      }
+    }
+    final record = probe;
+    if (record == null || record.lossProbeScheduled) return;
+    final scheduled = _retryCache.values.where(
+      (candidate) => candidate.lossProbeScheduled,
+    );
+    if (scheduled.length >= maxInFlight) return;
+    record.lossProbeScheduled = true;
+    final delay = _lossProbeDelay;
+    logger.info(
+      'loss probe rel_seq=${record.sequenceNumber} reason=sack_gap '
+      'highest_sacked=$highestSacked delay_ms=${delay.inMilliseconds}',
+    );
+    Timer(delay, () {
+      unawaited(_sendLossProbe(record, highestSacked));
+    });
+  }
+
+  Duration get _lossProbeDelay {
+    final doubledAckDelay = ackDelay * 2;
+    final floor = const Duration(seconds: 1);
+    final cap = const Duration(seconds: 10);
+    if (doubledAckDelay < floor) return floor;
+    if (doubledAckDelay > cap) return cap;
+    return doubledAckDelay;
+  }
+
+  Future<void> _sendLossProbe(_RetryChunk record, int highestSacked) async {
+    record.lossProbeScheduled = false;
+    if (_closed ||
+        transport.isBackingOff ||
+        !_retryCache.containsKey(record.sequenceNumber)) {
+      return;
+    }
+    try {
+      logger.info(
+        'loss probe rel_seq=${record.sequenceNumber} reason=sack_gap '
+        'highest_sacked=$highestSacked',
+      );
+      record.retryCount += 1;
+      await transport.sendFile(
+        OutgoingTunnelFile(
+          fileName: record.fileName,
+          bytes: record.bytes,
+          sequenceNumber: record.uploadSequenceNumber,
+          direction: sendDirection,
+        ),
+      );
+      record.markSent();
+    } on BtunAccountTemporarilyUnavailable catch (error) {
+      final retryAfter = error.retryAfter;
+      if (retryAfter != null) {
+        final current = _retryNotBefore;
+        if (current == null || retryAfter.isAfter(current)) {
+          _retryNotBefore = retryAfter;
+        }
+      }
+      logger.warn(
+        'loss probe paused for chunk rel_seq=${record.sequenceNumber}: $error',
+      );
+    } on Object catch (error) {
+      logger.warn(
+        'loss probe failed for chunk rel_seq=${record.sequenceNumber}: $error',
+      );
+    }
   }
 
   void _trimRetryCache() {
@@ -701,7 +961,17 @@ class ChunkTransport {
     return frame.payload.length + (frame.host?.length ?? 0) + 256;
   }
 
-  void _logChunkSummary(int sequence, List<TunnelFrame> frames, int target) {
+  int _receiveSequenceFor(PlainChunk chunk) {
+    return chunk.reliableSequenceNumber;
+  }
+
+  void _logChunkSummary(
+    int uploadSequence,
+    int reliableSequence,
+    bool ackOnly,
+    List<TunnelFrame> frames,
+    int target,
+  ) {
     final counts = <FrameType, int>{};
     var payloadBytes = 0;
     _ChunkMode? mode;
@@ -717,7 +987,8 @@ class ChunkTransport {
         .map((entry) => '${entry.key.name}:${entry.value}')
         .join(',');
     logger.info(
-      'chunk seq=$sequence frames=${frames.length} types=$types '
+      'chunk file_seq=$uploadSequence rel_seq=$reliableSequence '
+      'ack_only=$ackOnly frames=${frames.length} types=$types '
       'payload=$payloadBytes mode=${(mode ?? _ChunkMode.steady).name} '
       'target=$target',
     );
@@ -725,6 +996,35 @@ class ChunkTransport {
 }
 
 enum _ChunkMode { interactive, steady, bulk }
+
+class _AckSnapshot {
+  _AckSnapshot(this.ackNumber, List<AckRange> sackRanges)
+    : sackRanges = List<AckRange>.unmodifiable(sackRanges);
+
+  final int ackNumber;
+  final List<AckRange> sackRanges;
+
+  @override
+  bool operator ==(Object other) {
+    if (other is! _AckSnapshot || ackNumber != other.ackNumber) return false;
+    if (sackRanges.length != other.sackRanges.length) return false;
+    for (var i = 0; i < sackRanges.length; i += 1) {
+      final a = sackRanges[i];
+      final b = other.sackRanges[i];
+      if (a.start != b.start || a.end != b.end) return false;
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode {
+    var hash = ackNumber.hashCode;
+    for (final range in sackRanges) {
+      hash = Object.hash(hash, range.start, range.end);
+    }
+    return hash;
+  }
+}
 
 class _StreamChunkState {
   _StreamChunkState(DateTime now) : firstDataAt = now, lastDataAt = now;
@@ -766,19 +1066,33 @@ class _StreamChunkState {
 class _RetryChunk {
   _RetryChunk({
     required this.sequenceNumber,
+    required this.uploadSequenceNumber,
     required this.fileName,
     required this.bytes,
   });
 
   final int sequenceNumber;
+  final int uploadSequenceNumber;
   final String fileName;
   final List<int> bytes;
   int retryCount = 0;
   int? lastSentAt;
+  bool sacked = false;
+  bool lossProbeScheduled = false;
 
   void markSent() {
     lastSentAt = DateTime.now().millisecondsSinceEpoch;
   }
+}
+
+String _newChunkEpoch() {
+  final random = Random.secure();
+  final micros = DateTime.now().microsecondsSinceEpoch.toRadixString(16);
+  final salt = List<int>.generate(
+    8,
+    (_) => random.nextInt(256),
+  ).map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
+  return '$micros$salt';
 }
 
 class _BufferedChunk {

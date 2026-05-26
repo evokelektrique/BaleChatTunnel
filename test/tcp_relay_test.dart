@@ -73,10 +73,12 @@ void main() {
     );
     final chunk = await clientCrypto.encrypt(
       PlainChunk(
-        version: 1,
+        version: 4,
         sessionId: sessionId,
         direction: Direction.c2r,
         sequenceNumber: 1,
+        chunkEpoch: 'client-test-epoch',
+        reliableSequenceNumber: 1,
         frames: [
           TunnelFrame.open(
             sessionId: sessionId,
@@ -188,10 +190,12 @@ void main() {
     );
     final chunk = await clientCrypto.encrypt(
       PlainChunk(
-        version: 1,
+        version: 4,
         sessionId: sessionId,
         direction: Direction.c2r,
         sequenceNumber: 1,
+        chunkEpoch: 'client-test-epoch',
+        reliableSequenceNumber: 1,
         frames: [
           TunnelFrame.open(
             sessionId: sessionId,

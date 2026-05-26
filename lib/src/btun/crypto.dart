@@ -82,6 +82,7 @@ class BtunCrypto {
       sequenceNumber: chunk.sequenceNumber,
       nonce: nonce,
       compressed: useCompression,
+      chunkEpoch: chunk.chunkEpoch,
     );
     final box = await _algorithm.encrypt(
       useCompression ? compressed : plain,

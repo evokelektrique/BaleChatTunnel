@@ -63,6 +63,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   var _rateLimitEvents = 0;
   var _transientHttpEvents = 0;
   var _adaptiveConcurrentUploads = 1;
+  DateTime? _lastUploadRateWaitLogAt;
 
   @override
   bool get isBackingOff {
@@ -82,6 +83,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   @override
   Future<void> start() async {
     if (_updates != null) return;
+    await _quarantineExistingMessages();
     // Realtime updates provide low-latency delivery. Polling remains enabled as
     // a recovery path for missed update events or reconnect gaps.
     _updates = client.updates.listen((update) {
@@ -90,6 +92,28 @@ class BaleSavedMessagesTransport implements TunnelTransport {
       }
     });
     _scheduleNextPoll();
+  }
+
+  Future<void> _quarantineExistingMessages() async {
+    try {
+      final messages = await _withRateLimitBackoff(
+        'startup quarantine Saved Messages',
+        () => client.loadHistory(peer: _savedMessagesPeer, limit: 30),
+      );
+      var ignored = 0;
+      for (final message in messages) {
+        if (!_isMatchingTunnelMessage(message)) continue;
+        final messageId = _messageIdFor(message);
+        if (stateDb.hasProcessedMessage(messageId)) continue;
+        stateDb.markProcessedMessage(messageId);
+        ignored += 1;
+      }
+      if (ignored > 0) {
+        logger.info('ignored existing tunnel files on startup count=$ignored');
+      }
+    } on Object catch (error) {
+      logger.warn('startup tunnel file quarantine failed: $error');
+    }
   }
 
   void updateSettings({
@@ -124,6 +148,9 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     // A retry for the same sequence should wait on the original upload attempt
     // instead of sending duplicate documents while the first is queued.
     if (existing != null) return existing;
+    if (file.isAckOnly && file.replaceKey != null) {
+      _replacePendingAckOnly(file);
+    }
     logger.info(
       'queued upload seq=${file.sequenceNumber} bytes=${file.bytes.length}',
     );
@@ -142,6 +169,29 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     return current;
   }
 
+  void _replacePendingAckOnly(OutgoingTunnelFile file) {
+    final replaceKey = file.replaceKey;
+    if (replaceKey == null) return;
+    for (var i = _pendingUploads.length - 1; i >= 0; i -= 1) {
+      final pending = _pendingUploads[i];
+      final pendingFile = pending.file;
+      if (!pendingFile.isAckOnly || pendingFile.replaceKey != replaceKey) {
+        continue;
+      }
+      _pendingUploads.removeAt(i);
+      if (!pending.completer.isCompleted) {
+        pending.completer.completeError(
+          const BtunUploadSuperseded('ACK upload superseded'),
+        );
+      }
+      logger.info(
+        'replaced pending ACK upload seq=${pendingFile.sequenceNumber} '
+        'with seq=${file.sequenceNumber}',
+      );
+      break;
+    }
+  }
+
   void _pumpUploads() {
     final configuredLimit = maxConcurrentUploads <= 0
         ? 1
@@ -155,7 +205,7 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     // Uploads are paced through a small worker loop so rate-limit backoff can
     // pause future files without blocking callers that enqueue chunks.
     while (_activeUploads < limit && _pendingUploads.isNotEmpty) {
-      final upload = _pendingUploads.removeAt(0);
+      final upload = _pendingUploads.removeAt(_nextUploadQueueIndex());
       _activeUploads += 1;
       unawaited(() async {
         try {
@@ -174,6 +224,13 @@ class BaleSavedMessagesTransport implements TunnelTransport {
         }
       }());
     }
+  }
+
+  int _nextUploadQueueIndex() {
+    final firstData = _pendingUploads.indexWhere(
+      (upload) => !upload.file.isAckOnly,
+    );
+    return firstData == -1 ? 0 : firstData;
   }
 
   Future<void> _sendFileNow(OutgoingTunnelFile file) async {
@@ -268,13 +325,8 @@ class BaleSavedMessagesTransport implements TunnelTransport {
   }
 
   Future<void> _maybeDownload(BaleMessage message) async {
-    final document = message.document;
-    if (document == null) return;
-    if (!isBtunFileName(document.name)) return;
-    if (!_nameMatches(document.name)) return;
-    final messageId = accountUserId == null
-        ? message.messageId.toString()
-        : '$accountUserId:${message.messageId}';
+    if (!_isMatchingTunnelMessage(message)) return;
+    final messageId = _messageIdFor(message);
     if (stateDb.hasProcessedMessage(messageId)) return;
     // Bale history can return the same document repeatedly. Store message IDs
     // before emitting files so the chunk layer sees each document once.
@@ -330,8 +382,23 @@ class BaleSavedMessagesTransport implements TunnelTransport {
     return name.startsWith(prefix);
   }
 
+  bool _isMatchingTunnelMessage(BaleMessage message) {
+    final document = message.document;
+    if (document == null) return false;
+    if (!isBtunFileName(document.name)) return false;
+    return _nameMatches(document.name);
+  }
+
+  String _messageIdFor(BaleMessage message) {
+    return accountUserId == null
+        ? message.messageId.toString()
+        : '$accountUserId:${message.messageId}';
+  }
+
   bool _isReceiveOperation(String operation) {
-    return operation.startsWith('poll ') || operation.startsWith('download ');
+    return operation.startsWith('poll ') ||
+        operation.startsWith('download ') ||
+        operation.startsWith('startup quarantine ');
   }
 
   Future<T> _withRateLimitBackoff<T>(
@@ -392,15 +459,28 @@ class BaleSavedMessagesTransport implements TunnelTransport {
           .add(const Duration(minutes: 1))
           .difference(now);
       if (delay > Duration.zero) {
-        logger.warn(
-          'upload rate limit ${_uploadWindow.length}/$limit per minute; '
-          'waiting ${delay.inSeconds}s',
-        );
+        _logUploadRateWait(delay, limit);
         await Future<void>.delayed(delay);
       } else {
         _dropExpiredUploadAttempts(DateTime.now());
       }
     }
+  }
+
+  void _logUploadRateWait(Duration delay, int limit) {
+    final now = DateTime.now();
+    final last = _lastUploadRateWaitLogAt;
+    if (last != null && now.difference(last) < const Duration(seconds: 5)) {
+      return;
+    }
+    _lastUploadRateWaitLogAt = now;
+    final waitText = delay < const Duration(seconds: 1)
+        ? '<1s'
+        : '${(delay.inMilliseconds / 1000).ceil()}s';
+    logger.warn(
+      'upload rate limit ${_uploadWindow.length}/$limit per minute; '
+      'waiting $waitText',
+    );
   }
 
   void _recordUploadAttempt() {

@@ -18,12 +18,16 @@ class OutgoingTunnelFile {
     required this.bytes,
     required this.sequenceNumber,
     required this.direction,
+    this.isAckOnly = false,
+    this.replaceKey,
   });
 
   final String fileName;
   final List<int> bytes;
   final int sequenceNumber;
   final Direction direction;
+  final bool isAckOnly;
+  final String? replaceKey;
 }
 
 class TunnelTrafficDelta {
@@ -68,4 +72,13 @@ class BtunAccountTemporarilyUnavailable implements Exception {
     return 'temporary Bale account failure$account during $operation: '
         '$reason$retry';
   }
+}
+
+class BtunUploadSuperseded implements Exception {
+  const BtunUploadSuperseded(this.reason);
+
+  final String reason;
+
+  @override
+  String toString() => reason;
 }
