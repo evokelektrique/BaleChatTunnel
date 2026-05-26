@@ -208,6 +208,23 @@ All modes trade speed for resilience through Bale file uploads and polling.
 Use matching session IDs on both profiles, and make sure each profile has the
 other side's public key.
 
+### Benchmark
+
+Early `bulk` mode field numbers on an approximately 16 Mbps connection:
+
+| Transfer size | Realistic time | Realistic throughput |
+| ------------- | -------------- | -------------------- |
+| 10 MB         | ~18-45 seconds | ~250-650 KB/s        |
+| 50 MB         | ~1.5-3 minutes | ~280-650 KB/s        |
+| 100 MB        | ~2.5-5 minutes | ~330-711 KB/s        |
+| 500 MB        | ~15-35 minutes | ~240-600 KB/s        |
+| 1 GB          | ~35-75 minutes | ~220-520 KB/s        |
+
+A completed 100 MB `curl` download through SOCKS5 finished in about `00:02:30`
+and ended around **711 KB/s**. Treat these numbers as practical expectations,
+not guaranteed limits; Bale rate limits, polling delay, retries, and account
+backoff can reduce sustained throughput.
+
 ## Development
 
 Requirements:
